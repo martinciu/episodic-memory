@@ -2,7 +2,8 @@
 import { verifyIndex, repairIndex } from './verify.js';
 import { indexSession, indexUnprocessed, indexConversations } from './indexer.js';
 import { initDatabase } from './db.js';
-import { getDbPath, getArchiveDir, statIfExists } from './paths.js';
+import { getDbPath, getArchiveDir, statIfExists, getExcludedProjects } from './paths.js';
+import { pruneProjects } from './prune.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -107,6 +108,45 @@ async function main() {
         await indexConversations(undefined, undefined, concurrency, noSummaries);
         break;
 
+      case 'prune': {
+        // exclude.txt only stops *future* indexing (indexer.ts:62-63). Without this,
+        // removing an already-indexed project meant hand-written SQL. See issue #4.
+        const dryRun = process.argv.includes('--dry-run');
+        const projectIdx = process.argv.findIndex(a => a === '--project');
+        let targets: string[];
+
+        if (process.argv.includes('--excluded')) {
+          targets = getExcludedProjects();
+          if (targets.length === 0) {
+            console.log('No excluded projects configured — nothing to prune.');
+            console.log('Set CONVERSATION_SEARCH_EXCLUDE_PROJECTS or add entries to exclude.txt.');
+            break;
+          }
+        } else if (projectIdx !== -1 && process.argv[projectIdx + 1]) {
+          targets = [process.argv[projectIdx + 1]];
+        } else {
+          console.error('Usage: index-cli prune (--excluded | --project <name>) [--dry-run]');
+          process.exit(1);
+        }
+
+        console.log(`Pruning ${targets.length} project(s): ${targets.join(', ')}`);
+        const pdb = initDatabase();
+        const res = pruneProjects(pdb, targets, { dryRun });
+        pdb.close();
+
+        console.log(`  exchanges  : ${res.exchangesDeleted}`);
+        console.log(`  tool_calls : ${res.toolCallsDeleted}`);
+        console.log(`  vectors    : ${res.vectorsDeleted}`);
+        console.log(`  text freed : ${(res.bytesFreed / 1024 ** 2).toFixed(1)} MB`);
+        if (dryRun) {
+          console.log('\nDry run — nothing was deleted. Re-run without --dry-run to apply.');
+        } else if (res.exchangesDeleted > 0) {
+          // Deleting rows alone reclaims no disk space; SQLite keeps the freed pages.
+          console.log('\nRows removed. Run `index vacuum` to return the freed pages to disk.');
+        }
+        break;
+      }
+
       case 'vacuum': {
         // SQLite never returns freed pages to the filesystem on its own, and nothing
         // else in this codebase runs VACUUM. Deleting rows therefore reclaims no disk
@@ -163,3 +203,4 @@ async function main() {
 }
 
 main();
+
