@@ -107,6 +107,50 @@ async function main() {
         await indexConversations(undefined, undefined, concurrency, noSummaries);
         break;
 
+      case 'vacuum': {
+        // SQLite never returns freed pages to the filesystem on its own, and nothing
+        // else in this codebase runs VACUUM. Deleting rows therefore reclaims no disk
+        // space, which reads to users as "deleting didn't work". See issue #3.
+        const dbPath = getDbPath();
+        // Open first: initDatabase() creates the file and runs migrations, so measuring
+        // before that reports 0 on a fresh DB and a negative "reclaimed" figure.
+        const db = initDatabase();
+        const before = fs.existsSync(dbPath) ? fs.statSync(dbPath).size : 0;
+        const freePages = (db.prepare('PRAGMA freelist_count').get() as { freelist_count: number })
+          .freelist_count;
+        const pageSize = (db.prepare('PRAGMA page_size').get() as { page_size: number }).page_size;
+
+        console.log(`Database: ${dbPath}`);
+        console.log(`  size before : ${(before / 1024 ** 2).toFixed(1)} MB`);
+        console.log(`  free pages  : ${freePages} (~${((freePages * pageSize) / 1024 ** 2).toFixed(1)} MB reclaimable)`);
+        console.log('Running VACUUM (needs temporary free space ~= database size)...');
+
+        const started = Date.now();
+        db.exec('VACUUM');
+        db.close();
+
+        const after = fs.statSync(dbPath).size;
+        const freed = before - after;
+        const elapsed = ((Date.now() - started) / 1000).toFixed(1);
+        console.log(`  size after  : ${(after / 1024 ** 2).toFixed(1)} MB`);
+        if (freed > 0) {
+          console.log(
+            `  reclaimed   : ${(freed / 1024 ** 2).toFixed(1)} MB` +
+              (before > 0 ? ` (${((freed / before) * 100).toFixed(1)}%)` : '') +
+              ` in ${elapsed}s`
+          );
+        } else {
+          // VACUUM also checkpoints the WAL into the main file, so a database with
+          // little or no free space can legitimately end up slightly larger. Reporting
+          // that as a negative "reclaimed" figure reads like a failure; it isn't.
+          console.log(
+            `  nothing to reclaim — file grew ${(Math.abs(freed) / 1024 ** 2).toFixed(1)} MB ` +
+              `as VACUUM checkpointed the WAL into it (${elapsed}s)`
+          );
+        }
+        break;
+      }
+
       case 'index-all':
       default:
         await indexConversations(undefined, undefined, concurrency, noSummaries);
