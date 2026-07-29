@@ -4,6 +4,7 @@ import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
 import { getDbPath } from './paths.js';
 import { EMBEDDING_VERSION, EMBEDDING_DIM } from './embedding-migration.js';
+import { truncateForIndex } from './constants.js';
 export function migrateSchema(db) {
     const columns = db.prepare(`SELECT name FROM pragma_table_info('exchanges')`).all();
     const columnNames = new Set(columns.map(c => c.name));
@@ -216,7 +217,10 @@ export function insertExchange(db, exchange, embedding, toolNames) {
      thinking_level, thinking_disabled, thinking_triggers, embedding_version)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-    stmt.run(exchange.id, exchange.project, exchange.timestamp, exchange.userMessage, exchange.assistantMessage, exchange.archivePath, exchange.lineStart, exchange.lineEnd, now, exchange.parentUuid || null, exchange.isSidechain ? 1 : 0, exchange.harness || 'claude', exchange.sessionId || null, exchange.cwd || null, exchange.gitBranch || null, exchange.claudeVersion || null, exchange.agentVersion || exchange.claudeVersion || null, exchange.model || null, exchange.modelProvider || null, exchange.thinkingLevel || null, exchange.thinkingDisabled ? 1 : 0, exchange.thinkingTriggers || null, EMBEDDING_VERSION);
+    stmt.run(exchange.id, exchange.project, exchange.timestamp, 
+    // Cap machine-generated prompt payload. This is the single choke point every
+    // indexer path goes through, so the DB-size invariant holds regardless of caller.
+    truncateForIndex(exchange.userMessage), truncateForIndex(exchange.assistantMessage), exchange.archivePath, exchange.lineStart, exchange.lineEnd, now, exchange.parentUuid || null, exchange.isSidechain ? 1 : 0, exchange.harness || 'claude', exchange.sessionId || null, exchange.cwd || null, exchange.gitBranch || null, exchange.claudeVersion || null, exchange.agentVersion || exchange.claudeVersion || null, exchange.model || null, exchange.modelProvider || null, exchange.thinkingLevel || null, exchange.thinkingDisabled ? 1 : 0, exchange.thinkingTriggers || null, EMBEDDING_VERSION);
     // Insert into vector table (delete first since virtual tables don't support REPLACE)
     const delStmt = db.prepare(`DELETE FROM vec_exchanges WHERE id = ?`);
     delStmt.run(exchange.id);

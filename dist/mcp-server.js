@@ -24836,6 +24836,14 @@ var DEFAULT_STALE_MS = 10 * 60 * 1e3;
 // src/embedding-migration.ts
 var EMBEDDING_DIM = 1024;
 
+// src/constants.ts
+var MAX_INDEXED_MESSAGE_BYTES = (() => {
+  const raw = process.env.EPISODIC_MEMORY_MAX_MESSAGE_BYTES;
+  if (raw === void 0) return 262144;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) ? parsed : 262144;
+})();
+
 // src/db.ts
 function migrateSchema(db) {
   const columns = db.prepare(`SELECT name FROM pragma_table_info('exchanges')`).all();
