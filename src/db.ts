@@ -5,6 +5,7 @@ import fs from 'fs';
 import * as sqliteVec from 'sqlite-vec';
 import { getDbPath } from './paths.js';
 import { EMBEDDING_VERSION, EMBEDDING_DIM } from './embedding-migration.js';
+import { truncateForIndex } from './constants.js';
 
 export function migrateSchema(db: Database.Database): void {
   const columns = db.prepare(`SELECT name FROM pragma_table_info('exchanges')`).all() as Array<{ name: string }>;
@@ -253,8 +254,10 @@ export function insertExchange(
     exchange.id,
     exchange.project,
     exchange.timestamp,
-    exchange.userMessage,
-    exchange.assistantMessage,
+    // Cap machine-generated prompt payload. This is the single choke point every
+    // indexer path goes through, so the DB-size invariant holds regardless of caller.
+    truncateForIndex(exchange.userMessage),
+    truncateForIndex(exchange.assistantMessage),
     exchange.archivePath,
     exchange.lineStart,
     exchange.lineEnd,
