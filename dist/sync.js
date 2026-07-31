@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { SUMMARIZER_CONTEXT_MARKER } from './constants.js';
-import { getExcludedProjects, findJsonlFiles } from './paths.js';
+import { getExcludedProjects, findJsonlFiles, statIfExists } from './paths.js';
 import { formatErrorSentinel, shouldQueueForSummary } from './summary-sentinel.js';
 const EXCLUSION_MARKERS = [
     '<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>',
@@ -73,8 +73,8 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
             continue;
         }
         const projectPath = path.join(sourceDir, project);
-        const stat = fs.statSync(projectPath);
-        if (!stat.isDirectory())
+        const stat = statIfExists(projectPath);
+        if (!stat?.isDirectory())
             continue;
         const files = findJsonlFiles(projectPath, excludedDirSet);
         for (const file of files) {
