@@ -55,6 +55,8 @@ COMMANDS:
   --verify       Check index health
   --repair       Fix detected issues
   --rebuild      Delete DB and re-index everything (requires confirmation)
+  --prune        Remove already-indexed projects (--excluded | --project <name>) [--dry-run]
+  --vacuum       Shrink the database file (reclaim freed pages)
 
 OPTIONS:
   --concurrency N    Parallel summarization (1-16, default: 1)
@@ -80,6 +82,12 @@ EXAMPLES:
 
   # Nuclear option (deletes everything, re-indexes)
   index-conversations --rebuild
+
+  # See what pruning excluded projects would remove (no writes)
+  index-conversations --prune --excluded --dry-run
+
+  # Reclaim disk space after pruning
+  index-conversations --vacuum
 
 WORKFLOW:
   1. Initial setup: index-conversations --cleanup
@@ -132,6 +140,16 @@ async function main() {
         } else {
           console.log('Cancelled');
         }
+        break;
+
+      case 'prune':
+      case '--prune':
+        await runScript('prune', args);
+        break;
+
+      case 'vacuum':
+      case '--vacuum':
+        await runScript('vacuum', args);
         break;
 
       default:
