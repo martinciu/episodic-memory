@@ -1,5 +1,10 @@
 # Episodic Memory
 
+> **Fork status**
+> This is a maintained fork of [obra/episodic-memory](https://github.com/obra/episodic-memory) — upstream has been frozen since 2026-05-21 (24 open PRs).
+> Differs from upstream: multilingual `Xenova/bge-m3` embeddings (1024 dimensions, CLS pooling) in place of the upstream English-only model, plus cherry-picked upstream fixes (#108, #124, #133, #144).
+> Install from `episodic-memory@martinciu-forks` — not upstream's marketplace.
+
 Semantic search for Claude Code and Codex conversations. Remember past discussions, decisions, and patterns.
 
 ## Testimonial
