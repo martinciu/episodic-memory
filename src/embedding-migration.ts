@@ -1,10 +1,12 @@
 /**
  * Embedding migration.
  *
- * The encoder was upgraded from all-MiniLM-L6-v2 to bge-small-en-v1.5. Existing
- * databases have vec_exchanges rows produced by the old encoder. This module
- * provides the primitives for an incremental, lock-protected, resumable
- * background migration that re-embeds stale rows in batches during sync.
+ * The encoder was upgraded from all-MiniLM-L6-v2 to bge-small-en-v1.5 (v1),
+ * then to the multilingual bge-m3 (v2 — 1024-dim, see db.ts
+ * migrateVecDimension for the vec_exchanges rebuild). Existing databases have
+ * vec_exchanges rows produced by the old encoder. This module provides the
+ * primitives for an incremental, lock-protected, resumable background
+ * migration that re-embeds stale rows in batches during sync.
  *
  *   EMBEDDING_VERSION   — bumped any time the encoder pipeline changes
  *   acquire/release lock — file-based with PID-liveness fallback
@@ -17,7 +19,14 @@ import Database from 'better-sqlite3';
 import { acquireFileLock, releaseFileLock, FileLockHandle } from './file-lock.js';
 
 /** Bump when anything in the embedding pipeline changes (model, dtype, prefix). */
-export const EMBEDDING_VERSION = 1;
+export const EMBEDDING_VERSION = 2;
+
+/**
+ * Dimension of the current encoder's dense vectors. Lives here rather than in
+ * embeddings.ts so schema code (db.ts) and tests can import it without
+ * pulling in the transformers runtime.
+ */
+export const EMBEDDING_DIM = 1024;
 
 /**
  * Lock primitives for the migration are the same as for sync (#97) and any

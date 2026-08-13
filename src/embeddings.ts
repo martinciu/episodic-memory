@@ -8,18 +8,24 @@ env.useBrowserCache = false;
 /**
  * Embedding model configuration.
  *
- * Using BAAI's bge-small-en-v1.5 (via Xenova's ONNX export) instead of the
- * older all-MiniLM-L6-v2 — measured +6.34 R@1 on a 17K-corpus retrieval test
- * against real production data. Same 384 dimensions, so vec_exchanges schema
- * is unchanged.
+ * Using BAAI's bge-m3 (via Xenova's ONNX export) instead of the English-only
+ * bge-small-en-v1.5. This archive is a mixed Polish/English corpus, and an
+ * EN-only encoder embeds Polish only as a fuzzy lexical match: paraphrase
+ * queries with no token overlap return noise (measured 2026-08-13 — an
+ * on-topic Polish paraphrase query scored 0/5 relevant results despite 85
+ * matching exchanges in the index), and cross-lingual PL↔EN retrieval fails
+ * entirely. bge-m3 is multilingual (~100 languages) with an aligned
+ * cross-lingual space.
  *
- * BGE models recommend prepending a task prefix to QUERY embeddings only
- * (passages/documents go through unmodified). See `withQueryPrefix` and
- * `generateQueryEmbedding` below.
+ * Differences from bge-small-en handled here and in the schema:
+ *   - 1024-dim dense vectors (EMBEDDING_DIM in embedding-migration.ts;
+ *     vec_exchanges is rebuilt by migrateVecDimension in db.ts)
+ *   - CLS pooling (the trained dense-retrieval output for bge-m3)
+ *   - no query prefix — bge-m3 is trained prefix-free for both queries
+ *     and passages
  */
-const MODEL_ID = 'Xenova/bge-small-en-v1.5';
+const MODEL_ID = 'Xenova/bge-m3';
 const MODEL_DTYPE = 'q8';
-export const BGE_QUERY_PREFIX = 'Represent this sentence for searching relevant passages: ';
 
 /**
  * Resolve an intra-op thread cap for the embedding session, or null to leave
@@ -56,6 +62,22 @@ export function resolveIntraOpThreads(): number | null {
   return null;
 }
 
+const DEFAULT_EMBED_MAX_CHARS = 4000;
+
+/**
+ * Resolve the character budget for a single embedding input. Override with
+ * EPISODIC_MEMORY_EMBED_MAX_CHARS (positive integer); invalid or non-positive
+ * values fall back to the default.
+ */
+export function resolveEmbedMaxChars(): number {
+  const override = process.env.EPISODIC_MEMORY_EMBED_MAX_CHARS;
+  if (override !== undefined) {
+    const n = Number.parseInt(override, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_EMBED_MAX_CHARS;
+}
+
 let embeddingPipeline: FeatureExtractionPipeline | null = null;
 
 export async function initEmbeddings(): Promise<void> {
@@ -82,13 +104,17 @@ export async function generateEmbedding(text: string): Promise<number[]> {
     await initEmbeddings();
   }
 
-  // Truncate text to avoid token limits (512 tokens max for bge-small).
-  // Empirically, retrieval quality is best at the 2000-char truncation limit;
-  // longer inputs degrade mean-pooled embeddings.
-  const truncated = text.substring(0, 2000);
+  // Truncate to bound embedding cost. bge-m3 accepts up to 8192 tokens, so
+  // bge-small's 512-token/2000-char ceiling no longer applies. 4000 chars
+  // (~1000-1500 tokens for Polish, which tokenizes denser than English)
+  // doubles the captured context while keeping CPU embed time reasonable for
+  // bulk re-indexing. Override with EPISODIC_MEMORY_EMBED_MAX_CHARS.
+  const truncated = text.substring(0, resolveEmbedMaxChars());
 
   const output = await embeddingPipeline!(truncated, {
-    pooling: 'mean',
+    // CLS pooling: bge-m3's dense-retrieval vector is the normalized CLS
+    // token, not a mean over token states.
+    pooling: 'cls',
     normalize: true,
   });
 
@@ -96,22 +122,13 @@ export async function generateEmbedding(text: string): Promise<number[]> {
 }
 
 /**
- * Prepend the BGE retrieval prefix to a query string. Idempotent: returns
- * the input unchanged if the prefix is already present.
- */
-export function withQueryPrefix(query: string): string {
-  if (query.startsWith(BGE_QUERY_PREFIX)) return query;
-  return BGE_QUERY_PREFIX + query;
-}
-
-/**
- * Generate an embedding for a search QUERY. Adds the model-specific prefix
- * before embedding, which gives a small but consistent recall lift on
- * retrieval tasks. Document/passage embeddings (`generateExchangeEmbedding`)
- * stay unmodified — that's the asymmetric pattern BGE models are trained for.
+ * Generate an embedding for a search QUERY. bge-m3 is trained prefix-free:
+ * queries and passages share one embedding path, so this is a plain alias —
+ * kept as a named entry point so call sites (and any future model with an
+ * asymmetric query prefix) don't need to change.
  */
 export async function generateQueryEmbedding(query: string): Promise<number[]> {
-  return generateEmbedding(withQueryPrefix(query));
+  return generateEmbedding(query);
 }
 
 export async function generateExchangeEmbedding(

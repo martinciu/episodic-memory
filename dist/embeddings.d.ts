@@ -1,4 +1,3 @@
-export declare const BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: ";
 /**
  * Resolve an intra-op thread cap for the embedding session, or null to leave
  * onnxruntime at its default (one worker per core).
@@ -23,18 +22,19 @@ export declare const BGE_QUERY_PREFIX = "Represent this sentence for searching r
  * 0 (or any non-positive/invalid value) restores onnxruntime's default.
  */
 export declare function resolveIntraOpThreads(): number | null;
+/**
+ * Resolve the character budget for a single embedding input. Override with
+ * EPISODIC_MEMORY_EMBED_MAX_CHARS (positive integer); invalid or non-positive
+ * values fall back to the default.
+ */
+export declare function resolveEmbedMaxChars(): number;
 export declare function initEmbeddings(): Promise<void>;
 export declare function generateEmbedding(text: string): Promise<number[]>;
 /**
- * Prepend the BGE retrieval prefix to a query string. Idempotent: returns
- * the input unchanged if the prefix is already present.
- */
-export declare function withQueryPrefix(query: string): string;
-/**
- * Generate an embedding for a search QUERY. Adds the model-specific prefix
- * before embedding, which gives a small but consistent recall lift on
- * retrieval tasks. Document/passage embeddings (`generateExchangeEmbedding`)
- * stay unmodified — that's the asymmetric pattern BGE models are trained for.
+ * Generate an embedding for a search QUERY. bge-m3 is trained prefix-free:
+ * queries and passages share one embedding path, so this is a plain alias —
+ * kept as a named entry point so call sites (and any future model with an
+ * asymmetric query prefix) don't need to change.
  */
 export declare function generateQueryEmbedding(query: string): Promise<number[]>;
 export declare function generateExchangeEmbedding(userMessage: string, assistantMessage: string, toolNames?: string[]): Promise<number[]>;

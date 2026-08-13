@@ -135,7 +135,7 @@ describe('verifyIndex', () => {
       lineEnd: 2
     };
 
-    const embedding = new Array(384).fill(0.1);
+    const embedding = new Array(1024).fill(0.1);
     insertExchange(db, exchange, embedding);
     db.close();
 
@@ -176,7 +176,7 @@ describe('verifyIndex', () => {
       lineEnd: 2
     };
 
-    const embedding = new Array(384).fill(0.1);
+    const embedding = new Array(1024).fill(0.1);
     insertExchange(db, exchange, embedding);
 
     // Get the last_indexed timestamp
@@ -250,7 +250,7 @@ describe('repairIndex', () => {
       lineEnd: 2
     };
 
-    const embedding = new Array(384).fill(0.1);
+    const embedding = new Array(1024).fill(0.1);
     insertExchange(db, exchange, embedding);
     db.close();
 
@@ -301,7 +301,7 @@ describe('repairIndex', () => {
       lineEnd: 2
     };
 
-    const embedding = new Array(384).fill(0.1);
+    const embedding = new Array(1024).fill(0.1);
     insertExchange(db, exchange, embedding);
 
     // Get the last_indexed timestamp

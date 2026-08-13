@@ -43,7 +43,7 @@ describe('multi-word text search (#127)', () => {
       sessionId: `session-${partial.id}`,
       ...partial,
     };
-    insertExchange(db, exchange, new Array(384).fill(0.1));
+    insertExchange(db, exchange, new Array(1024).fill(0.1));
     db.close();
   }
 

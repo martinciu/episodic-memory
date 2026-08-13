@@ -59,8 +59,8 @@ describe('cross-harness recall', () => {
       modelProvider: 'openai',
     };
 
-    insertExchange(db, claudeExchange, new Array(384).fill(0.1));
-    insertExchange(db, codexExchange, new Array(384).fill(0.1));
+    insertExchange(db, claudeExchange, new Array(1024).fill(0.1));
+    insertExchange(db, codexExchange, new Array(1024).fill(0.1));
     db.close();
 
     const results = await searchConversations('shared-cross-harness-marker', {

@@ -53,7 +53,7 @@ describe('embedding migration', () => {
         line_end INTEGER NOT NULL,
         embedding_version INTEGER NOT NULL DEFAULT 0
       );
-      CREATE VIRTUAL TABLE IF NOT EXISTS vec_exchanges USING vec0(id TEXT PRIMARY KEY, embedding FLOAT[384]);
+      CREATE VIRTUAL TABLE IF NOT EXISTS vec_exchanges USING vec0(id TEXT PRIMARY KEY, embedding FLOAT[1024]);
     `);
     const ids: string[] = [];
     for (let i = 0; i < n; i++) {
@@ -63,8 +63,8 @@ describe('embedding migration', () => {
         `INSERT INTO exchanges (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end, embedding_version)
          VALUES (?, 'p', '2026-01-01T00:00:00Z', ?, ?, '/x.jsonl', 1, 2, ?)`
       ).run(id, `user message ${i}`, `assistant reply ${i}`, version);
-      const dummy = new Float32Array(384);
-      for (let k = 0; k < 384; k++) dummy[k] = Math.random();
+      const dummy = new Float32Array(1024);
+      for (let k = 0; k < 1024; k++) dummy[k] = Math.random();
       db.prepare(`INSERT INTO vec_exchanges (id, embedding) VALUES (?, ?)`).run(id, Buffer.from(dummy.buffer));
     }
     return ids;
@@ -142,13 +142,13 @@ describe('embedding migration', () => {
         embedding_version INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE tool_calls (id TEXT PRIMARY KEY, exchange_id TEXT, tool_name TEXT);
-      CREATE VIRTUAL TABLE vec_exchanges USING vec0(id TEXT PRIMARY KEY, embedding FLOAT[384]);
+      CREATE VIRTUAL TABLE vec_exchanges USING vec0(id TEXT PRIMARY KEY, embedding FLOAT[1024]);
     `);
     const N = 5;
     for (let i = 0; i < N; i++) {
       db.prepare(`INSERT INTO exchanges (id, project, timestamp, user_message, assistant_message, archive_path, line_start, line_end, embedding_version) VALUES (?, 'p', 't', ?, ?, '/x', 1, 2, 0)`)
         .run(`r-${i}`, `question ${i} about feature`, `answer ${i} explaining the feature`);
-      const dummy = new Float32Array(384);
+      const dummy = new Float32Array(1024);
       db.prepare(`INSERT INTO vec_exchanges (id, embedding) VALUES (?, ?)`).run(`r-${i}`, Buffer.from(dummy.buffer));
     }
 
@@ -195,7 +195,7 @@ describe('embedding migration', () => {
     const pre = acquireMigrationLock(lockPath);
     expect(pre).not.toBeNull();
 
-    const fakeEmbed = async () => Array.from({ length: 384 }, () => 0);
+    const fakeEmbed = async () => Array.from({ length: 1024 }, () => 0);
     const result = await runMigrationBatch(db, testDir, 10, fakeEmbed);
     expect(result).toBe(0);
     // Still stale; nothing was written.
@@ -209,7 +209,7 @@ describe('embedding migration', () => {
   it('recordReembedded updates vec_exchanges embedding and stamps embedding_version on the row', () => {
     const db = openDb();
     seedExchanges(db, 1, 0);
-    const newVec = Array.from({ length: 384 }, () => 0.5);
+    const newVec = Array.from({ length: 1024 }, () => 0.5);
     recordReembedded(db, 'ex-0', newVec);
     const row = db.prepare('SELECT embedding_version FROM exchanges WHERE id = ?').get('ex-0') as { embedding_version: number };
     expect(row.embedding_version).toBe(EMBEDDING_VERSION);

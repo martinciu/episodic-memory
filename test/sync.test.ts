@@ -187,7 +187,7 @@ describe('sync command', () => {
     db.exec(`
       CREATE VIRTUAL TABLE vec_exchanges USING vec0(
         id TEXT PRIMARY KEY,
-        embedding FLOAT[384]
+        embedding FLOAT[1024]
       )
     `);
     db.close();

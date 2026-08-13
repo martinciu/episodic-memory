@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0-pl.1] - 2026-08-13 (fork: martinciu/episodic-memory)
+
+### Changed
+- **Embedding model swapped to multilingual `Xenova/bge-m3`** (was English-only `Xenova/bge-small-en-v1.5`). Motivation: on a mixed Polish/English archive the EN-only encoder handles Polish only as a fuzzy lexical match — a Polish paraphrase query with no token overlap scored 0/5 relevant results despite 85 matching exchanges in the index, and cross-lingual PL↔EN retrieval failed entirely (measured 2026-08-13). Consequences handled: 1024-dim dense vectors (`EMBEDDING_DIM`; `vec_exchanges` is dropped and rebuilt by `migrateVecDimension` on first open), CLS pooling, no query prefix (`BGE_QUERY_PREFIX`/`withQueryPrefix` removed), `EMBEDDING_VERSION` bumped to 2 so the existing background migration re-embeds all rows.
+- Embedding input truncation raised from 2000 to 4000 chars (bge-m3 accepts 8192 tokens, so bge-small's 512-token ceiling no longer applies); override with `EPISODIC_MEMORY_EMBED_MAX_CHARS`.
+- Test timeouts raised (30s/10s → 60s/60s) — the larger encoder embeds fixtures slower on CPU.
+
+### Fixed (cherry-picked open upstream PRs)
+- Summarizer runs tool-less (`tools: []`) so a resumed live session can't execute the session's pending work (upstream #108, fixes #116/#134).
+- onnxruntime intra-op threads capped on Apple Silicon to stop the CPU peg during bulk embedding (upstream #124); override with `EPISODIC_MEMORY_EMBED_THREADS`.
+- Date filters (`after`/`before`) work with vector search — `hasMetadataFilters()` now includes them (upstream #133, fixes #126).
+- Multi-word text search matches as AND of token LIKEs instead of one literal substring (upstream #144, fixes #127).
+
 ## [1.4.2] - 2026-05-21
 
 ### Fixed

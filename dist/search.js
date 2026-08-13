@@ -37,7 +37,7 @@ function buildSearchFilters(options) {
     };
 }
 function hasMetadataFilters(options) {
-    return Boolean(options.project || options.session_id || options.git_branch);
+    return Boolean(options.project || options.session_id || options.git_branch || options.after || options.before);
 }
 /**
  * Escape LIKE wildcards so user input is treated as a literal substring.

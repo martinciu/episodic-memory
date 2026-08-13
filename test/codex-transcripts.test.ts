@@ -261,7 +261,7 @@ describe('Codex transcript support', () => {
       modelProvider: 'openai'
     };
 
-    insertExchange(db, exchange, new Array(384).fill(0.1));
+    insertExchange(db, exchange, new Array(1024).fill(0.1));
 
     const row = db.prepare(`
       SELECT harness, session_id, agent_version, model, model_provider

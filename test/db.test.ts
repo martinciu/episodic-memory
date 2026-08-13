@@ -99,8 +99,8 @@ describe('insertExchange with last_indexed', () => {
     };
 
     const beforeInsert = Date.now();
-    // Create proper 384-dimensional embedding
-    const embedding = new Array(384).fill(0.1);
+    // Create proper 1024-dimensional embedding
+    const embedding = new Array(1024).fill(0.1);
     insertExchange(db, exchange, embedding);
     const afterInsert = Date.now();
 

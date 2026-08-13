@@ -1,15 +1,14 @@
 {
-  "name": "episodic-memory-dev",
-  "description": "Development marketplace for episodic memory plugin",
+  "name": "martinciu-forks",
+  "description": "Marketplace for martinciu plugin forks",
   "owner": {
-    "name": "Jesse Vincent",
-    "email": "jesse@fsck.com"
+    "name": "Marcin Ciunelis"
   },
   "plugins": [
     {
       "name": "episodic-memory",
-      "description": "Semantic search for Claude Code conversations. Remember past discussions, decisions, and patterns.",
-      "version": "1.4.2",
+      "description": "Semantic search for Claude Code conversations \u2014 multilingual fork (bge-m3 embeddings) with upstream fixes #108/#124/#133/#144.",
+      "version": "1.5.0-pl.1",
       "source": "./",
       "author": {
         "name": "Jesse Vincent",

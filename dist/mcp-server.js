@@ -3640,7 +3640,12 @@ var require_fast_uri = __commonJS({
     }
     function resolve(baseURI, relativeURI, options) {
       const schemelessOptions = options ? Object.assign({ scheme: "null" }, options) : { scheme: "null" };
-      const resolved = resolveComponent(parse3(baseURI, schemelessOptions), parse3(relativeURI, schemelessOptions), schemelessOptions, true);
+      const { parsed: baseParsed, malformedAuthorityOrPort: baseMalformed } = parseWithStatus(baseURI, schemelessOptions);
+      const { parsed: relativeParsed, malformedAuthorityOrPort: relativeMalformed } = parseWithStatus(relativeURI, schemelessOptions);
+      if (baseMalformed || relativeMalformed) {
+        throw new Error(baseParsed.error || relativeParsed.error || "URI is malformed.");
+      }
+      const resolved = resolveComponent(baseParsed, relativeParsed, schemelessOptions, true);
       schemelessOptions.skipEscape = true;
       return serialize(resolved, schemelessOptions);
     }
@@ -3765,6 +3770,8 @@ var require_fast_uri = __commonJS({
       return uriTokens.join("");
     }
     var URI_PARSE = /^(?:([^#/:?]+):)?(?:\/\/((?:([^#/?@]*)@)?(\[[^#/?\]]+\]|[^#/:?]*)(?::(\d*))?))?([^#?]*)(?:\?([^#]*))?(?:#((?:.|[\n\r])*))?/u;
+    var AUTHORITY_PREFIX = /^(?:[^#/:?]+:)?\/\/([^/?#]*)/;
+    var AUTHORITY_INTRODUCER_REGION = /^(?:[^#/:?]+:)?([/\\\t\n\r]*)/;
     function getParseError(parsed, matches) {
       if (matches[2] !== void 0 && parsed.path && parsed.path[0] !== "/") {
         return 'URI path must start with "/" when authority is present.';
@@ -3792,6 +3799,25 @@ var require_fast_uri = __commonJS({
           uri = options.scheme + ":" + uri;
         } else {
           uri = "//" + uri;
+        }
+      }
+      const authorityMatch = uri.match(AUTHORITY_PREFIX);
+      if (authorityMatch !== null && authorityMatch[1].indexOf("\\") !== -1) {
+        parsed.error = "URI authority must not contain a literal backslash.";
+        malformedAuthorityOrPort = true;
+      }
+      const introducerMatch = uri.match(AUTHORITY_INTRODUCER_REGION);
+      if (introducerMatch !== null) {
+        const region = introducerMatch[1];
+        const normalizedRegion = region.replace(/[\t\n\r]/g, "");
+        if (normalizedRegion.length >= 2) {
+          if (normalizedRegion.slice(0, 2) !== "//") {
+            parsed.error = parsed.error || "URI authority must not contain a literal backslash.";
+            malformedAuthorityOrPort = true;
+          } else if (region.length !== normalizedRegion.length) {
+            parsed.error = parsed.error || "URI authority introducer must not contain whitespace.";
+            malformedAuthorityOrPort = true;
+          }
         }
       }
       const matches = uri.match(URI_PARSE);
@@ -24349,16 +24375,7 @@ var Server = class extends Protocol {
     if (!methodSchema) {
       throw new Error("Schema is missing a method literal");
     }
-    let methodValue;
-    if (isZ4Schema(methodSchema)) {
-      const v4Schema = methodSchema;
-      const v4Def = v4Schema._zod?.def;
-      methodValue = v4Def?.value ?? v4Schema.value;
-    } else {
-      const v3Schema = methodSchema;
-      const legacyDef = v3Schema._def;
-      methodValue = legacyDef?.value ?? v3Schema.value;
-    }
+    const methodValue = getLiteralValue(methodSchema);
     if (typeof methodValue !== "string") {
       throw new Error("Schema method literal must be a string");
     }
@@ -24667,8 +24684,17 @@ var Server = class extends Protocol {
 import process3 from "node:process";
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
+var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
 var ReadBuffer = class {
+  constructor(options) {
+    this._maxBufferSize = options?.maxBufferSize ?? STDIO_DEFAULT_MAX_BUFFER_SIZE;
+  }
   append(chunk) {
+    const newSize = (this._buffer?.length ?? 0) + chunk.length;
+    if (newSize > this._maxBufferSize) {
+      this.clear();
+      throw new Error(`ReadBuffer exceeded maximum size of ${this._maxBufferSize} bytes`);
+    }
     this._buffer = this._buffer ? Buffer.concat([this._buffer, chunk]) : chunk;
   }
   readMessage() {
@@ -24696,18 +24722,24 @@ function serializeMessage(message) {
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 var StdioServerTransport = class {
-  constructor(_stdin = process3.stdin, _stdout = process3.stdout) {
+  constructor(_stdin = process3.stdin, _stdout = process3.stdout, options) {
     this._stdin = _stdin;
     this._stdout = _stdout;
-    this._readBuffer = new ReadBuffer();
     this._started = false;
     this._ondata = (chunk) => {
-      this._readBuffer.append(chunk);
-      this.processReadBuffer();
+      try {
+        this._readBuffer.append(chunk);
+        this.processReadBuffer();
+      } catch (error51) {
+        this.onerror?.(error51);
+        this.close().catch(() => {
+        });
+      }
     };
     this._onerror = (error51) => {
       this.onerror?.(error51);
     };
+    this._readBuffer = new ReadBuffer({ maxBufferSize: options?.maxBufferSize });
   }
   /**
    * Starts listening for messages on stdin.
@@ -24801,6 +24833,9 @@ function getDbPath() {
 import * as lockfile from "proper-lockfile";
 var DEFAULT_STALE_MS = 10 * 60 * 1e3;
 
+// src/embedding-migration.ts
+var EMBEDDING_DIM = 1024;
+
 // src/db.ts
 function migrateSchema(db) {
   const columns = db.prepare(`SELECT name FROM pragma_table_info('exchanges')`).all();
@@ -24876,6 +24911,15 @@ function migrateToolCallsCascade(db) {
   db.pragma("foreign_keys = ON");
   console.log("  tool_calls migration complete.");
 }
+function migrateVecDimension(db) {
+  const row = db.prepare(
+    `SELECT sql FROM sqlite_master WHERE type='table' AND name='vec_exchanges'`
+  ).get();
+  if (!row) return;
+  if (row.sql.includes(`FLOAT[${EMBEDDING_DIM}]`)) return;
+  console.log(`Migrating vec_exchanges to ${EMBEDDING_DIM}-dim embeddings (stale vectors will be re-embedded in the background)...`);
+  db.exec("DROP TABLE vec_exchanges");
+}
 function initDatabase() {
   const dbPath = getDbPath();
   const dbDir = path2.dirname(dbPath);
@@ -24925,10 +24969,11 @@ function initDatabase() {
       FOREIGN KEY (exchange_id) REFERENCES exchanges(id) ON DELETE CASCADE
     )
   `);
+  migrateVecDimension(db);
   db.exec(`
     CREATE VIRTUAL TABLE IF NOT EXISTS vec_exchanges USING vec0(
       id TEXT PRIMARY KEY,
-      embedding FLOAT[384]
+      embedding FLOAT[${EMBEDDING_DIM}]
     )
   `);
   migrateSchema(db);
@@ -24963,9 +25008,8 @@ function initDatabase() {
 import { pipeline, env } from "@huggingface/transformers";
 env.allowLocalModels = true;
 env.useBrowserCache = false;
-var MODEL_ID = "Xenova/bge-small-en-v1.5";
+var MODEL_ID = "Xenova/bge-m3";
 var MODEL_DTYPE = "q8";
-var BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: ";
 function resolveIntraOpThreads() {
   const override = process.env.EPISODIC_MEMORY_EMBED_THREADS;
   if (override !== void 0) {
@@ -24976,6 +25020,15 @@ function resolveIntraOpThreads() {
     return 2;
   }
   return null;
+}
+var DEFAULT_EMBED_MAX_CHARS = 4e3;
+function resolveEmbedMaxChars() {
+  const override = process.env.EPISODIC_MEMORY_EMBED_MAX_CHARS;
+  if (override !== void 0) {
+    const n = Number.parseInt(override, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_EMBED_MAX_CHARS;
 }
 var embeddingPipeline = null;
 async function initEmbeddings() {
@@ -25001,19 +25054,17 @@ async function generateEmbedding(text) {
   if (!embeddingPipeline) {
     await initEmbeddings();
   }
-  const truncated = text.substring(0, 2e3);
+  const truncated = text.substring(0, resolveEmbedMaxChars());
   const output = await embeddingPipeline(truncated, {
-    pooling: "mean",
+    // CLS pooling: bge-m3's dense-retrieval vector is the normalized CLS
+    // token, not a mean over token states.
+    pooling: "cls",
     normalize: true
   });
   return Array.from(output.data);
 }
-function withQueryPrefix(query) {
-  if (query.startsWith(BGE_QUERY_PREFIX)) return query;
-  return BGE_QUERY_PREFIX + query;
-}
 async function generateQueryEmbedding(query) {
-  return generateEmbedding(withQueryPrefix(query));
+  return generateEmbedding(query);
 }
 
 // src/summary-sentinel.ts
@@ -25056,7 +25107,7 @@ function buildSearchFilters(options) {
   };
 }
 function hasMetadataFilters(options) {
-  return Boolean(options.project || options.session_id || options.git_branch);
+  return Boolean(options.project || options.session_id || options.git_branch || options.after || options.before);
 }
 function escapeLikePattern(term) {
   return term.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
@@ -26904,7 +26955,7 @@ ${result}
 }
 
 // src/version.ts
-var VERSION = "1.4.2";
+var VERSION = "1.5.0-pl.1";
 
 // src/mcp-server.ts
 import fs4 from "fs";
