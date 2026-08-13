@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed (cherry-picked open upstream PRs)
 - Summarizer subprocesses no longer launch your MCP servers, plugins, or hooks. Each background summarization used to inherit the full Claude configuration — on MCP-heavy installs a single sync fanned out to hundreds of node processes, and phantom notifications appeared mid-session (upstream #149, also ends upstream #136).
-- Concurrent Claude Code sessions no longer risk `database is locked` failures: every SQLite connection now waits up to 5 seconds for a lock (`busy_timeout = 5000`), and foreign-key enforcement is restored after the sqlite-vec load path left it off (upstream #101).
+- Every SQLite connection now pins `busy_timeout = 5000` and `foreign_keys = ON` explicitly instead of relying on driver defaults — defense-in-depth for multi-writer safety if a future better-sqlite3 release changes those defaults (upstream #101).
 - A dangling project symlink — for example left behind by a removed worktree — no longer takes sync and indexing down. All six directory walks skip entries whose target is gone while still following healthy symlinks (upstream #143, fixes upstream #142).
 - Transcripts that vanish or become unreadable mid-run no longer abort indexing: the file is skipped with a `Skipped <file> (read failed: …)` log line and the run continues (upstream #132, fixes upstream #121; regression test added in this fork).
 
