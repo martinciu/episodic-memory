@@ -30,8 +30,10 @@ export declare function getConversationSourceDirs(): string[];
 export declare function findJsonlFiles(dir: string, excludedDirNames?: ReadonlySet<string>): string[];
 /**
  * statSync that follows symlinks but returns null instead of throwing when
- * the entry cannot be stat'ed — a dangling symlink (e.g. left behind by a
- * storage migration), or an entry deleted between readdir and stat.
+ * the entry is gone (ENOENT/ENOTDIR — a dangling symlink left behind by a
+ * storage migration, or an entry deleted between readdir and stat). Any
+ * other stat failure (e.g. EACCES, ELOOP, EIO) is rethrown so callers fail
+ * loudly instead of silently dropping existing data.
  * Callers treat null as "skip this entry".
  */
 export declare function statIfExists(target: string): fs.Stats | null;

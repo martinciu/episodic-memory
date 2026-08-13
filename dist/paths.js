@@ -78,16 +78,21 @@ export function findJsonlFiles(dir, excludedDirNames) {
 }
 /**
  * statSync that follows symlinks but returns null instead of throwing when
- * the entry cannot be stat'ed — a dangling symlink (e.g. left behind by a
- * storage migration), or an entry deleted between readdir and stat.
+ * the entry is gone (ENOENT/ENOTDIR — a dangling symlink left behind by a
+ * storage migration, or an entry deleted between readdir and stat). Any
+ * other stat failure (e.g. EACCES, ELOOP, EIO) is rethrown so callers fail
+ * loudly instead of silently dropping existing data.
  * Callers treat null as "skip this entry".
  */
 export function statIfExists(target) {
     try {
         return fs.statSync(target);
     }
-    catch {
-        return null;
+    catch (error) {
+        const code = error.code;
+        if (code === 'ENOENT' || code === 'ENOTDIR')
+            return null;
+        throw error;
     }
 }
 /**
