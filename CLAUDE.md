@@ -10,6 +10,13 @@ A Claude Code plugin that gives semantic search across past Claude Code conversa
 - **Tests** live in `test/`, run via `vitest`.
 - **Generated files** live in `dist/` and `src/version.ts`. The latter is gitignored; never edit it.
 
+## Fork branch layout and workflow
+
+- **`main`** — the fork's product line and default branch. All PRs target `main`.
+- **`obra`** — pristine mirror of upstream `obra/episodic-memory`'s `main`. Never commit to it directly; it only advances via fetching upstream.
+
+All changes go through a feature branch → PR to `main`; never commit directly to `main`. Commits and CHANGELOG entries are written in English. PR titles get exactly one contextually-relevant emoji.
+
 ## Build and test
 
 ```
@@ -71,6 +78,15 @@ Follow this every time:
    ```
    Without this, `/plugin install episodic-memory@superpowers-marketplace` continues serving the previous version. **Users install from the marketplace, not from this repo's tags.**
 8. **Smoke test from the published release:** clone the new tag into a tmp dir, `npm install && npm run build && npm test`, then run a synthetic sync + search end-to-end. The full suite covers most paths but doesn't exercise first-install model download or MCP boot.
+
+## Upstream sync
+
+Upstream (`obra/episodic-memory`) has been frozen since 2026-05-21 but may revive. When it does, pull changes in like this:
+
+1. `git fetch upstream` then `git merge upstream/main` — into a branch created off `main`
+2. Run the full test suite: `npm test`
+3. Version bump, per Version management above
+4. Push the branch and land it via PR
 
 ## Things to be careful with
 
