@@ -24929,6 +24929,8 @@ function initDatabase() {
   const db = new Database(dbPath);
   sqliteVec.load(db);
   db.pragma("journal_mode = WAL");
+  db.pragma("busy_timeout = 5000");
+  db.pragma("foreign_keys = ON");
   db.exec(`
     CREATE TABLE IF NOT EXISTS exchanges (
       id TEXT PRIMARY KEY,
