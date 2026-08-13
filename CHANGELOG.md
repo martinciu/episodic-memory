@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2-martinciu.2] - 2026-08-13 (fork: martinciu/episodic-memory)
+
+### Changed
+- **New fork versioning scheme: `<upstream-base>-martinciu.N`.** The version now states exactly which upstream release the fork sits on, plus the fork's release counter on that base (Debian-style downstream versioning). Earlier fork releases self-bumped the base (`1.5.0-pl.1`), squatting version numbers upstream never shipped. Retroactively, `1.5.0-pl.1` was overlay #1 on upstream 1.4.2 — so this release is `1.4.2-martinciu.2`. When an upstream release is merged in, the base follows it and the counter resets (e.g. `1.4.3-martinciu.1`).
+
+### Fixed (cherry-picked open upstream PRs)
+- Summarizer subprocesses no longer launch your MCP servers, plugins, or hooks. Each background summarization used to inherit the full Claude configuration — on MCP-heavy installs a single sync fanned out to hundreds of node processes, and phantom notifications appeared mid-session (upstream #149, also ends upstream #136).
+- Concurrent Claude Code sessions no longer risk `database is locked` failures: every SQLite connection now waits up to 5 seconds for a lock (`busy_timeout = 5000`), and foreign-key enforcement is restored after the sqlite-vec load path left it off (upstream #101).
+- A dangling project symlink — for example left behind by a removed worktree — no longer takes sync and indexing down. All six directory walks skip entries whose target is gone while still following healthy symlinks (upstream #143, fixes upstream #142).
+- Transcripts that vanish or become unreadable mid-run no longer abort indexing: the file is skipped with a `Skipped <file> (read failed: …)` log line and the run continues (upstream #132, fixes upstream #121; regression test added in this fork).
+
 ## [1.5.0-pl.1] - 2026-08-13 (fork: martinciu/episodic-memory)
 
 ### Changed

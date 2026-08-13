@@ -29,11 +29,14 @@ The `prebuild` and `pretest` hooks both regenerate `src/version.ts`. After sourc
 
 ## Version management
 
-Three files hold the plugin version, all kept in lockstep:
+**Fork version scheme:** `<upstream-base>-martinciu.N` — the upstream release the fork is based on, plus a fork release counter on that base (e.g. `1.4.2-martinciu.2`). Never bump the base version yourself; it only changes when an upstream release is merged in, which resets the counter (`1.4.3-martinciu.1`). Historical exception: `1.5.0-pl.1` predates this scheme (it was overlay #1 on upstream 1.4.2).
+
+Four files hold the plugin version, all kept in lockstep:
 
 - `package.json`
 - `.claude-plugin/plugin.json`
 - `.claude-plugin/marketplace.json` (plugins[0].version)
+- `.codex-plugin/plugin.json`
 
 Plus a fourth thing outside this repo:
 
@@ -42,7 +45,7 @@ Plus a fourth thing outside this repo:
 To bump in this repo:
 
 ```
-./scripts/bump-version.sh X.Y.Z         # updates all three local files
+./scripts/bump-version.sh X.Y.Z         # updates all four local files
 ./scripts/bump-version.sh --check       # report current versions
 ./scripts/bump-version.sh --audit       # scan for stale references
 ```
