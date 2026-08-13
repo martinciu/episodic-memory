@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'fs';
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, chmodSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import Database from 'better-sqlite3';
@@ -8,6 +8,12 @@ import { indexConversations, indexUnprocessed, indexSession } from '../src/index
 import { verifyIndex } from '../src/verify.js';
 import { statIfExists } from '../src/paths.js';
 import { suppressConsole } from './test-utils.js';
+
+// chmod 000 doesn't block reads on Windows or when running as root.
+const chmodBlocksReads =
+  process.platform !== 'win32' &&
+  typeof process.getuid === 'function' &&
+  process.getuid() !== 0;
 
 // Symlink creation is unavailable in some environments (e.g. Windows without
 // Developer Mode). Probe once and skip the whole suite when unsupported.
@@ -197,6 +203,30 @@ describe.skipIf(!symlinksSupported)('statIfExists', () => {
       expect(statIfExists(join(dir, 'dangling-link'))).toBeNull();
       expect(statIfExists(join(dir, 'never-existed'))).toBeNull();
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(!chmodBlocksReads)('rethrows on EACCES instead of returning null', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'em-statifexists-eacces-'));
+    const blockedDir = join(dir, 'blocked');
+    mkdirSync(blockedDir);
+    const filePath = join(blockedDir, 'file');
+    writeFileSync(filePath, 'content', 'utf-8');
+    chmodSync(blockedDir, 0o000);
+    try {
+      let caught: NodeJS.ErrnoException | undefined;
+      expect(() => {
+        try {
+          statIfExists(filePath);
+        } catch (error) {
+          caught = error as NodeJS.ErrnoException;
+          throw error;
+        }
+      }).toThrow();
+      expect(caught?.code).toBe('EACCES');
+    } finally {
+      chmodSync(blockedDir, 0o755);
       rmSync(dir, { recursive: true, force: true });
     }
   });
