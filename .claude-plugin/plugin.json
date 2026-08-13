@@ -1,6 +1,6 @@
 {
   "name": "episodic-memory",
-  "version": "1.4.2-martinciu.2",
+  "version": "1.4.2-martinciu.3",
   "description": "Semantic search for Claude Code conversations — multilingual fork (bge-m3 embeddings) with upstream fixes #108/#124/#133/#144.",
   "author": {
     "name": "Jesse Vincent",
