@@ -26965,7 +26965,7 @@ ${result}
 }
 
 // src/version.ts
-var VERSION = "1.4.2-martinciu.2";
+var VERSION = "1.4.2-martinciu.3";
 
 // src/mcp-server.ts
 import fs4 from "fs";
