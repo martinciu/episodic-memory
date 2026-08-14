@@ -143,9 +143,11 @@ export function getIndexDir() {
  * Get database path
  */
 export function getDbPath() {
-    // Allow test override with direct DB path
-    if (process.env.EPISODIC_MEMORY_DB_PATH || process.env.TEST_DB_PATH) {
-        return process.env.EPISODIC_MEMORY_DB_PATH || process.env.TEST_DB_PATH;
+    // TEST_DB_PATH is the test-only override and must beat the user-facing
+    // EPISODIC_MEMORY_DB_PATH — otherwise a dev shell exporting the latter
+    // points row-deleting tests at the real database (#14).
+    if (process.env.TEST_DB_PATH || process.env.EPISODIC_MEMORY_DB_PATH) {
+        return process.env.TEST_DB_PATH || process.env.EPISODIC_MEMORY_DB_PATH;
     }
     return path.join(getIndexDir(), 'db.sqlite');
 }
