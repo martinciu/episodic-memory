@@ -27,8 +27,12 @@ export const SUMMARIZER_CONTEXT_MARKER =
 export const MAX_INDEXED_MESSAGE_BYTES = (() => {
   const raw = process.env.EPISODIC_MEMORY_MAX_MESSAGE_BYTES;
   if (raw === undefined) return 262_144;
-  const parsed = Number.parseInt(raw, 10);
-  return Number.isFinite(parsed) ? parsed : 262_144;
+  const trimmed = raw.trim();
+  // Only accept a fully-numeric string. Number.parseInt happily parses a
+  // leading numeric prefix ('256K' -> 256, '1e6' -> 1), which would silently
+  // truncate every indexed message to a stub instead of failing safe.
+  if (!/^-?\d+$/.test(trimmed)) return 262_144;
+  return Number.parseInt(trimmed, 10);
 })();
 
 /** Suffix appended to a truncated message, recording what was dropped. */
@@ -44,6 +48,13 @@ export function truncationNoticeFor(originalLength: number): string {
 export function truncateForIndex(message: string): string {
   if (!message || MAX_INDEXED_MESSAGE_BYTES <= 0) return message;
   if (message.length <= MAX_INDEXED_MESSAGE_BYTES) return message;
-  if (message.includes('[truncated by episodic-memory:')) return message;
+  // Anchor the idempotency check to the tail instead of searching the whole
+  // string: `includes()` used to exempt any message that merely *quoted* the
+  // marker text anywhere in its body, which left oversized payloads
+  // untruncated as long as they happened to mention the notice. The notice
+  // truncateForIndex itself emits always starts exactly at the cap position.
+  if (message.slice(MAX_INDEXED_MESSAGE_BYTES).startsWith('\n\n[truncated by episodic-memory:')) {
+    return message;
+  }
   return message.slice(0, MAX_INDEXED_MESSAGE_BYTES) + truncationNoticeFor(message.length);
 }
