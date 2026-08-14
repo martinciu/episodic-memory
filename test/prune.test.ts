@@ -13,9 +13,10 @@ const EMBEDDING = new Array(EMBEDDING_DIM).fill(0.1);
 
 /**
  * exclude.txt / CONVERSATION_SEARCH_EXCLUDE_PROJECTS are applied at index time only
- * (indexer.ts:62-63). Adding a project to the exclude list stops new rows appearing
- * but leaves everything already indexed in place, searchable, forever — and users
- * only ever discover the exclude list *after* something has flooded the index.
+ * (getExcludedProjects() in indexer.ts / sync.ts). Adding a project to the exclude list
+ * stops new rows appearing but leaves everything already indexed in place, searchable,
+ * forever — and users only ever discover the exclude list *after* something has flooded
+ * the index.
  *
  * Two traps this must respect:
  *   - tool_calls has an FK to exchanges, so deletion order matters (see #81).
@@ -100,8 +101,9 @@ describe('pruneProjects', () => {
     seed('a2', 'noisy');
     seed('b1', 'keep');
 
-    pruneProjects(db, ['noisy']);
+    const result = pruneProjects(db, ['noisy']);
 
+    expect(result.vectorsDeleted).toBe(2);
     const after = counts();
     // the invariant that matters: one vector per exchange, always
     expect(after.vectors).toBe(after.exchanges);
