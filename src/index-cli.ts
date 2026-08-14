@@ -114,7 +114,6 @@ async function main() {
         // See upstream obra#141.
         const dryRun = process.argv.includes('--dry-run');
         const projectIdx = process.argv.findIndex(a => a === '--project');
-        const isProjectTarget = projectIdx !== -1 && !!process.argv[projectIdx + 1];
         let targets: string[];
 
         if (process.argv.includes('--excluded')) {
@@ -145,7 +144,9 @@ async function main() {
         } else if (res.exchangesDeleted > 0) {
           // Deleting rows alone reclaims no disk space; SQLite keeps the freed pages.
           console.log('\nRows removed. Run `index vacuum` to return the freed pages to disk.');
-          if (isProjectTarget) {
+          const excluded = getExcludedProjects();
+          const unexcluded = targets.filter(t => !excluded.includes(t));
+          if (unexcluded.length > 0) {
             // The archives are untouched, so the indexer's high-water mark for this
             // project's archive files drops back to 0 on the next run and re-inserts
             // everything, unless the project is also excluded from future indexing.

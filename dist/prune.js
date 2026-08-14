@@ -48,6 +48,9 @@ export function pruneProjects(db, projects, options = {}) {
     // consistent state — a row committed by a concurrent writer (e.g. background sync)
     // between the pre-transaction estimate above and this callback must not be able to
     // leave a vector orphaned by working off a stale id list.
+    // Run in immediate mode: the callback reads before it writes, and a deferred (read-first)
+    // transaction that loses a race to a concurrent writer fails with un-retryable
+    // SQLITE_BUSY_SNAPSHOT instead of waiting on busy_timeout.
     const run = db.transaction(() => {
         const txIds = idsStmt.all(...projects).map((r) => r.id);
         const toolsResult = delTools.run(...projects);
@@ -59,6 +62,6 @@ export function pruneProjects(db, projects, options = {}) {
         result.vectorsDeleted = vectorsDeleted;
         result.exchangesDeleted = exchangesResult.changes;
     });
-    run();
+    run.immediate();
     return result;
 }

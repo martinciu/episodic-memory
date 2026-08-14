@@ -42,8 +42,10 @@ export function truncationNoticeFor(originalLength: number): string {
 
 /**
  * Cap a message for indexing, keeping the head so it stays searchable and the
- * source remains identifiable. Idempotent: re-truncating an already-truncated
- * string is a no-op, so re-indexing never stacks notices.
+ * source remains identifiable. Idempotent for a fixed cap: re-truncating its
+ * own output is a no-op, so re-indexing never stacks notices. (If
+ * MAX_INDEXED_MESSAGE_BYTES changes between runs, previously truncated text is
+ * re-evaluated against the new cap.)
  */
 export function truncateForIndex(message: string): string {
   if (!message || MAX_INDEXED_MESSAGE_BYTES <= 0) return message;

@@ -148,6 +148,21 @@ describe('oversized message guard', () => {
       );
       expect(result.endsWith(truncationNoticeFor(huge.length))).toBe(true);
     });
+
+    it('still truncates when the quoted marker carries its \\n\\n prefix mid-body', () => {
+      // Discriminates the tail-anchored check from a weaker
+      // includes('\n\n[truncated by episodic-memory:') variant, which this
+      // fixture would slip past.
+      const huge =
+        'a'.repeat(Math.floor(MAX_INDEXED_MESSAGE_BYTES / 2)) +
+        '\n\n[truncated by episodic-memory: 9 chars exceeded the 9-char index cap]' +
+        'x'.repeat(MAX_INDEXED_MESSAGE_BYTES);
+      const result = truncateForIndex(huge);
+      expect(result.length).toBeLessThanOrEqual(
+        MAX_INDEXED_MESSAGE_BYTES + truncationNoticeFor(huge.length).length
+      );
+      expect(result.endsWith(truncationNoticeFor(huge.length))).toBe(true);
+    });
   });
 });
 
