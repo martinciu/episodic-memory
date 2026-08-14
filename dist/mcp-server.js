@@ -24823,8 +24823,8 @@ function getIndexDir() {
   return ensureDir(path.join(getSuperpowersDir(), "conversation-index"));
 }
 function getDbPath() {
-  if (process.env.EPISODIC_MEMORY_DB_PATH || process.env.TEST_DB_PATH) {
-    return process.env.EPISODIC_MEMORY_DB_PATH || process.env.TEST_DB_PATH;
+  if (process.env.TEST_DB_PATH || process.env.EPISODIC_MEMORY_DB_PATH) {
+    return process.env.TEST_DB_PATH || process.env.EPISODIC_MEMORY_DB_PATH;
   }
   return path.join(getIndexDir(), "db.sqlite");
 }

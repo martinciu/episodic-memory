@@ -5,6 +5,7 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['test/**/*.test.ts'],
+    setupFiles: ['test/setup.ts'],
     // bge-m3 (570M params) embeds noticeably slower on CPU than the original
     // bge-small — indexing fixtures in tests and beforeEach hooks needs more
     // headroom than the stock 30s/10s.
