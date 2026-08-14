@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -133,5 +133,82 @@ describe('oversized message guard', () => {
       const once = truncateForIndex(huge);
       expect(truncateForIndex(once)).toBe(once);
     });
+
+    it('still truncates an oversized message that merely quotes the marker mid-body', () => {
+      // Regression for a fail-open bug: the old check used
+      // message.includes('[truncated by episodic-memory:'), which exempted
+      // ANY message containing that substring anywhere, not just messages
+      // that are themselves already-truncated output.
+      const huge =
+        'quoting [truncated by episodic-memory: 999 chars exceeded the 999-char index cap] mid-body' +
+        'x'.repeat(MAX_INDEXED_MESSAGE_BYTES * 2);
+      const result = truncateForIndex(huge);
+      expect(result.length).toBeLessThanOrEqual(
+        MAX_INDEXED_MESSAGE_BYTES + truncationNoticeFor(huge.length).length
+      );
+      expect(result.endsWith(truncationNoticeFor(huge.length))).toBe(true);
+    });
+  });
+});
+
+describe('MAX_INDEXED_MESSAGE_BYTES env override', () => {
+  const ENV_KEY = 'EPISODIC_MEMORY_MAX_MESSAGE_BYTES';
+  let originalValue: string | undefined;
+
+  beforeEach(() => {
+    originalValue = process.env[ENV_KEY];
+  });
+
+  afterEach(() => {
+    if (originalValue === undefined) {
+      delete process.env[ENV_KEY];
+    } else {
+      process.env[ENV_KEY] = originalValue;
+    }
+    // The constant is captured at module load time, so without this, later
+    // dynamic imports (in this file or others) could pick up a module
+    // instance memoized from a test case's env override above.
+    vi.resetModules();
+  });
+
+  /** Fresh module instance per call, so process.env is read anew each time. */
+  async function loadConstants() {
+    vi.resetModules();
+    return import('../src/constants.js');
+  }
+
+  it('defaults to 262144 when the env var is unset', async () => {
+    delete process.env[ENV_KEY];
+    const { MAX_INDEXED_MESSAGE_BYTES: value } = await loadConstants();
+    expect(value).toBe(262_144);
+  });
+
+  it('accepts a valid numeric override', async () => {
+    process.env[ENV_KEY] = '1000';
+    const { MAX_INDEXED_MESSAGE_BYTES: value } = await loadConstants();
+    expect(value).toBe(1000);
+  });
+
+  it('falls back to the default on non-numeric garbage', async () => {
+    process.env[ENV_KEY] = 'abc';
+    const { MAX_INDEXED_MESSAGE_BYTES: value } = await loadConstants();
+    expect(value).toBe(262_144);
+  });
+
+  it.each(['256K', '1e6'])(
+    'falls back to the default on a partial-numeric value (%s)',
+    async (raw) => {
+      process.env[ENV_KEY] = raw;
+      const { MAX_INDEXED_MESSAGE_BYTES: value } = await loadConstants();
+      expect(value).toBe(262_144);
+    }
+  );
+
+  it('"0" disables the guard so truncateForIndex is a no-op even for oversized input', async () => {
+    process.env[ENV_KEY] = '0';
+    const { MAX_INDEXED_MESSAGE_BYTES: value, truncateForIndex: truncate } = await loadConstants();
+    expect(value).toBe(0);
+    const huge = 'x'.repeat(500_000);
+    expect(truncate(huge)).toBe(huge);
   });
 });
