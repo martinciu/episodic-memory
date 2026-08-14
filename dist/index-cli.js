@@ -95,10 +95,12 @@ async function main() {
                 await indexConversations(undefined, undefined, concurrency, noSummaries);
                 break;
             case 'prune': {
-                // exclude.txt only stops *future* indexing (indexer.ts:62-63). Without this,
-                // removing an already-indexed project meant hand-written SQL. See issue #4.
+                // exclude.txt only stops *future* indexing (getExcludedProjects() in indexer.ts).
+                // Without this, removing an already-indexed project meant hand-written SQL.
+                // See upstream obra#141.
                 const dryRun = process.argv.includes('--dry-run');
                 const projectIdx = process.argv.findIndex(a => a === '--project');
+                const isProjectTarget = projectIdx !== -1 && !!process.argv[projectIdx + 1];
                 let targets;
                 if (process.argv.includes('--excluded')) {
                     targets = getExcludedProjects();
@@ -129,13 +131,21 @@ async function main() {
                 else if (res.exchangesDeleted > 0) {
                     // Deleting rows alone reclaims no disk space; SQLite keeps the freed pages.
                     console.log('\nRows removed. Run `index vacuum` to return the freed pages to disk.');
+                    if (isProjectTarget) {
+                        // The archives are untouched, so the indexer's high-water mark for this
+                        // project's archive files drops back to 0 on the next run and re-inserts
+                        // everything, unless the project is also excluded from future indexing.
+                        console.log('This prune is permanent only if you also add the project to `exclude.txt` ' +
+                            'or `CONVERSATION_SEARCH_EXCLUDE_PROJECTS` — otherwise the next `index` run ' +
+                            'will re-index it from the archives.');
+                    }
                 }
                 break;
             }
             case 'vacuum': {
                 // SQLite never returns freed pages to the filesystem on its own, and nothing
                 // else in this codebase runs VACUUM. Deleting rows therefore reclaims no disk
-                // space, which reads to users as "deleting didn't work". See issue #3.
+                // space, which reads to users as "deleting didn't work". See upstream obra#140.
                 const dbPath = getDbPath();
                 // Open first: initDatabase() creates the file and runs migrations, so measuring
                 // before that reports 0 on a fresh DB and a negative "reclaimed" figure.
@@ -159,6 +169,9 @@ async function main() {
                     console.log(`  reclaimed   : ${(freed / 1024 ** 2).toFixed(1)} MB` +
                         (before > 0 ? ` (${((freed / before) * 100).toFixed(1)}%)` : '') +
                         ` in ${elapsed}s`);
+                }
+                else if (freed === 0) {
+                    console.log(`  nothing to reclaim (${elapsed}s)`);
                 }
                 else {
                     // VACUUM also checkpoints the WAL into the main file, so a database with
