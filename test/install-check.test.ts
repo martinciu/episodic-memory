@@ -175,9 +175,99 @@ describe('ensureDepsInstalled — self-heal shared by the MCP wrapper and the CL
       ensureDepsInstalled(testDir, { ...quiet, pollMs: 25, waitTimeoutMs: 120, installer: async () => {} })
     ).rejects.toThrow(/another install/i);
   });
+
+  it('does not report healthy while a foreign lock is held even though all manifests are present (mid-install window)', async () => {
+    // A live npm install reifies top-level manifests before transitive deps
+    // finish extracting — manifests-present + lock-held must mean "wait".
+    stageAll(testDir);
+    mkdirSync(lockDir(), { recursive: true });
+    const logged: string[] = [];
+    let called = 0;
+    const pending = ensureDepsInstalled(testDir, {
+      log: (msg: string) => logged.push(msg),
+      pollMs: 25,
+      waitTimeoutMs: 2000,
+      installer: async () => { called++; },
+    });
+    setTimeout(() => rmSync(lockDir(), { recursive: true, force: true }), 60);
+    const result = await pending;
+    expect(result).toBe(false);
+    expect(called).toBe(0);
+    expect(logged.some(m => /waiting for another install/.test(m))).toBe(true);
+  });
+
+  it('does not steal a lock whose holder is alive and heartbeating, even past lockStaleMs', async () => {
+    let winnerCalls = 0;
+    let loserCalls = 0;
+    const winner = ensureDepsInstalled(testDir, {
+      ...quiet,
+      pollMs: 25,
+      lockStaleMs: 100,
+      heartbeatMs: 30,
+      installer: async (root: string) => {
+        winnerCalls++;
+        await new Promise(resolve => setTimeout(resolve, 300)); // slow install, outlives lockStaleMs
+        stageAll(root);
+      },
+    });
+    await new Promise(resolve => setTimeout(resolve, 40)); // let the winner take the lock
+    const loser = ensureDepsInstalled(testDir, {
+      ...quiet,
+      pollMs: 25,
+      lockStaleMs: 100,
+      waitTimeoutMs: 2000,
+      installer: async () => { loserCalls++; },
+    });
+    expect(await winner).toBe(true);
+    expect(await loser).toBe(false);
+    expect(winnerCalls).toBe(1);
+    expect(loserCalls).toBe(0);
+  });
+
+  it('leaves a foreign lock untouched when its own lock was stolen mid-install', async () => {
+    const result = await ensureDepsInstalled(testDir, {
+      ...quiet,
+      installer: async (root: string) => {
+        // Simulate a thief: replace our lock with one owned by another process.
+        rmSync(lockDir(), { recursive: true, force: true });
+        mkdirSync(lockDir(), { recursive: true });
+        writeFileSync(join(lockDir(), 'owner'), 'thief-pid-token', 'utf-8');
+        stageAll(root);
+      },
+    });
+    expect(result).toBe(true);
+    // The thief's lock must survive our release — we no longer own it.
+    expect(existsSync(lockDir())).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'gives up with a clear error — instead of spinning — when a stale lock cannot be removed',
+    async () => {
+      mkdirSync(lockDir(), { recursive: true });
+      const staleEpoch = (Date.now() - 60 * 60_000) / 1000;
+      utimesSync(lockDir(), staleEpoch, staleEpoch);
+      chmodSync(testDir, 0o555); // rmSync on the lock needs write on its parent — deny it
+      const logged: string[] = [];
+      try {
+        await expect(
+          ensureDepsInstalled(testDir, {
+            log: (msg: string) => logged.push(msg),
+            pollMs: 25,
+            waitTimeoutMs: 150,
+            installer: async () => {},
+          })
+        ).rejects.toThrow(/another install|install lock/i);
+        expect(logged.some(m => /could not remove stale install lock/.test(m))).toBe(true);
+      } finally {
+        chmodSync(testDir, 0o755);
+      }
+    },
+    10_000
+  );
 });
 
-describe('episodic-memory CLI dispatcher — dependency self-heal before dist import (#17)', () => {
+// POSIX-only: the fake npm is a shell script and PATH uses ':' joins.
+describe.skipIf(process.platform === 'win32')('episodic-memory CLI dispatcher — dependency self-heal before dist import (#17)', () => {
   let pluginRoot: string;
   let fakeBin: string;
   const cliPath = join(__dirname, '../cli/episodic-memory.js');
@@ -208,6 +298,9 @@ describe('episodic-memory CLI dispatcher — dependency self-heal before dist im
         // Keep the spawned sync-cli inert (exits 0 immediately) so the happy
         // path never touches the real archive/index.
         EPISODIC_MEMORY_SUMMARIZER_GUARD: '1',
+        // Belt-and-braces isolation in case the child ever gets past the guard.
+        TEST_DB_PATH: join(pluginRoot, 'test-index.sqlite'),
+        EPISODIC_MEMORY_CONFIG_DIR: join(pluginRoot, 'config'),
       },
       encoding: 'utf-8',
       timeout: 30_000,

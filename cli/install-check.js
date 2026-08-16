@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, rmSync, statSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { spawn } from 'child_process';
 
@@ -100,27 +100,49 @@ const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
  *
  * Concurrency: the MCP wrapper and the SessionStart hook start together, so
  * two installs can race. An atomic mkdir lock serializes them; the loser polls
- * until the winner finishes, then re-probes instead of installing again. A
- * lock older than lockStaleMs is presumed dead (killed hook) and stolen.
+ * until the winner finishes, then re-probes instead of installing again.
+ * "Healthy" is manifests-present AND no lock: during a live install the
+ * top-level manifests appear before transitive deps finish extracting, so a
+ * lock-blind probe would hand off to a half-written tree.
+ *
+ * Liveness vs. theft: the lock holder refreshes the lock's mtime every
+ * heartbeatMs while npm runs, so a live install is never stolen regardless of
+ * duration. A lock whose mtime is older than lockStaleMs has no live holder
+ * (killed hook) and is stolen. lockStaleMs < waitTimeoutMs by default, so an
+ * orphaned lock is always stolen within a waiter's patience — with the old
+ * 10-min stale / 5-min wait ordering every waiter gave up before the steal
+ * threshold and a killed hook wedged the MCP server for the whole session.
+ * Every waiting path is bounded by the deadline and paced by sleep: a lock
+ * that cannot be removed (EPERM/EBUSY, root-owned) degrades to a clear
+ * timeout error instead of a silent synchronous spin.
  */
 export async function ensureDepsInstalled(pluginRoot, options = {}) {
   const {
     installer = defaultNpmInstaller,
     pollMs = 1000,
     waitTimeoutMs = 5 * 60_000,
-    lockStaleMs = 10 * 60_000,
+    lockStaleMs = 2 * 60_000,
+    heartbeatMs = 30_000,
     log = (msg) => console.error(msg),
   } = options;
 
-  if (findMissingDeps(pluginRoot).length === 0) return false;
-
   const lockPath = join(pluginRoot, INSTALL_LOCK_DIRNAME);
+  const tokenPath = join(lockPath, 'owner');
+  const healthy = () => findMissingDeps(pluginRoot).length === 0 && !existsSync(lockPath);
+
+  if (healthy()) return false;
+
+  const token = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   const deadline = Date.now() + waitTimeoutMs;
+  let announcedWait = false;
 
   for (;;) {
+    if (healthy()) return false; // another process installed and released
+    let acquired = false;
     try {
       mkdirSync(lockPath);
-      break;
+      writeFileSync(tokenPath, token, 'utf-8');
+      acquired = true;
     } catch (err) {
       if (err.code !== 'EEXIST') throw err;
       let stale = false;
@@ -128,21 +150,74 @@ export async function ensureDepsInstalled(pluginRoot, options = {}) {
         stale = Date.now() - statSync(lockPath).mtimeMs >= lockStaleMs;
       } catch (statErr) {
         if (statErr.code !== 'ENOENT') throw statErr;
-        continue; // lock vanished between mkdir and stat — retry acquisition
+        // Lock vanished between mkdir and stat — fall through to the bounded
+        // wait below and retry acquisition next iteration.
       }
       if (stale) {
-        try { rmSync(lockPath, { recursive: true, force: true }); } catch {}
-        continue;
+        try {
+          rmSync(lockPath, { recursive: true, force: true });
+          continue; // stolen — retry acquisition immediately
+        } catch (rmErr) {
+          log(`episodic-memory: could not remove stale install lock at ${lockPath}: ${rmErr.message}`);
+          // Fall through to the deadline/sleep below — never spin on a lock
+          // we cannot remove.
+        }
+      } else if (!announcedWait) {
+        announcedWait = true;
+        log(`episodic-memory: waiting for another install to finish (lock at ${lockPath})...`);
       }
-      if (Date.now() >= deadline) {
-        throw new Error(
-          `another install appears to be running (lock at ${lockPath}); gave up after ${Math.round(waitTimeoutMs / 1000)}s`
-        );
-      }
-      await sleep(pollMs);
-      if (findMissingDeps(pluginRoot).length === 0) return false; // other process healed the deps
     }
+    if (acquired) break;
+    if (Date.now() >= deadline) {
+      throw new Error(
+        `another install appears to be running (lock at ${lockPath}); gave up after ${Math.round(waitTimeoutMs / 1000)}s`
+      );
+    }
+    await sleep(pollMs);
   }
+
+  const ownsLock = () => {
+    try {
+      return readFileSync(tokenPath, 'utf-8') === token;
+    } catch {
+      return false; // token unreadable/gone — assume stolen, never delete a foreign lock
+    }
+  };
+  const releaseLock = () => {
+    if (!ownsLock()) return;
+    try {
+      rmSync(lockPath, { recursive: true, force: true });
+    } catch (rmErr) {
+      log(`episodic-memory: could not remove install lock at ${lockPath}; remove it manually (${rmErr.message})`);
+    }
+  };
+
+  // Best-effort release if the hook harness kills us mid-install; SIGKILL
+  // can't be caught — that orphan goes stale and is stolen after lockStaleMs.
+  const exitHandler = () => releaseLock();
+  const signalHandler = () => {
+    releaseLock();
+    process.exit(143);
+  };
+  process.once('exit', exitHandler);
+  process.once('SIGTERM', signalHandler);
+  process.once('SIGINT', signalHandler);
+
+  // Keep the lock's mtime fresh while npm runs so a slow (cold-cache) install
+  // is never mistaken for a dead one and stolen into a concurrent npm run.
+  let heartbeatWarned = false;
+  const heartbeat = setInterval(() => {
+    try {
+      const now = new Date();
+      utimesSync(lockPath, now, now);
+    } catch (hbErr) {
+      if (!heartbeatWarned) {
+        heartbeatWarned = true;
+        log(`episodic-memory: could not refresh install lock at ${lockPath}: ${hbErr.message}`);
+      }
+    }
+  }, heartbeatMs);
+  heartbeat.unref?.();
 
   try {
     // Re-probe under the lock: the process we raced may have finished between
@@ -157,6 +232,10 @@ export async function ensureDepsInstalled(pluginRoot, options = {}) {
     }
     return true;
   } finally {
-    try { rmSync(lockPath, { recursive: true, force: true }); } catch {}
+    clearInterval(heartbeat);
+    process.removeListener('exit', exitHandler);
+    process.removeListener('SIGTERM', signalHandler);
+    process.removeListener('SIGINT', signalHandler);
+    releaseLock();
   }
 }
