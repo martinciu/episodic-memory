@@ -94,6 +94,11 @@ describe('isResumeFailure', () => {
     expect(isResumeFailure(new SummarizerSdkError('error_during_execution', 'session-id-x'))).toBe(true);
   });
 
+  it('matches SummarizerSdkError with subtype success (the SDK reports API errors from resume replay this way — issue #16)', () => {
+    expect(isResumeFailure(new SummarizerSdkError('success'))).toBe(true);
+    expect(isResumeFailure(new SummarizerSdkError('success', 'session-id-x'))).toBe(true);
+  });
+
   it('does not match SummarizerSdkError with other subtypes', () => {
     expect(isResumeFailure(new SummarizerSdkError('auth_failed'))).toBe(false);
     expect(isResumeFailure(new SummarizerSdkError('rate_limit'))).toBe(false);
@@ -106,6 +111,23 @@ describe('isResumeFailure', () => {
     expect(isResumeFailure('No conversation found')).toBe(false);
     expect(isResumeFailure(undefined)).toBe(false);
     expect(isResumeFailure(null)).toBe(false);
+  });
+});
+
+describe('SummarizerSdkError message', () => {
+  it('includes the SDK result text so logs and sentinels show the real API error', () => {
+    const error = new SummarizerSdkError(
+      'success',
+      'session-id-x',
+      'API Error: 400 messages.1.content.0: Invalid `signature` in `thinking` block'
+    );
+    expect(error.message).toContain('Invalid `signature` in `thinking` block');
+    expect(error.resultText).toContain('API Error: 400');
+  });
+
+  it('keeps the subtype-only message when no result text is available', () => {
+    const error = new SummarizerSdkError('auth_failed', 'session-id-x');
+    expect(error.message).toBe('Summarizer SDK error: auth_failed (session session-id-x)');
   });
 });
 
