@@ -9,7 +9,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(realpathSync(__filename));
 
 // Same resolution as mcp-server-wrapper.js: the hook invokes this script as
-// ${CLAUDE_PLUGIN_ROOT}/cli/episodic-memory.js, so both point at the same root.
+// ${PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT}}/cli/episodic-memory.js (hooks.json),
+// so both resolve to the directory this cli/ lives in.
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || join(__dirname, '..');
 
 const command = process.argv[2];
