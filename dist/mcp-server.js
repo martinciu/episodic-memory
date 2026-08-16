@@ -25237,8 +25237,7 @@ async function searchConversations(query, options = {}) {
     const { sql: textMatchSql, params: textMatchParams } = buildTextMatchClause(query);
     const textStmt = db.prepare(`
       SELECT
-        ${EXCHANGE_SELECT_COLUMNS},
-        0 as distance
+        ${EXCHANGE_SELECT_COLUMNS}
       FROM exchanges AS e
       WHERE ${textMatchSql}
         AND e.is_sidechain = 0
@@ -25273,7 +25272,7 @@ async function searchConversations(query, options = {}) {
     const snippet = snippetText + (exchange.userMessage.length > 200 ? "..." : "");
     return {
       exchange,
-      similarity: mode === "text" ? void 0 : l2DistanceToCosineSimilarity(row.distance),
+      similarity: typeof row.distance === "number" ? l2DistanceToCosineSimilarity(row.distance) : void 0,
       snippet,
       summary
     };
