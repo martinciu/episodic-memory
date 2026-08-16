@@ -8,7 +8,7 @@ import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
-import { findMissingDeps } from './install-check.js';
+import { ensureDepsInstalled } from './install-check.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -16,61 +16,13 @@ const __dirname = dirname(__filename);
 // Determine plugin root directory
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || join(__dirname, '..');
 
-// Helper function to run npm install
-function runNpmInstall() {
-  return new Promise((resolve, reject) => {
-    const isWindows = process.platform === 'win32';
-    const npmCommand = isWindows ? 'npm.cmd' : 'npm';
-
-    console.error('Installing episodic-memory dependencies (first run only)...');
-    console.error('This may take 30-60 seconds...');
-
-    // Install dependencies - npm will auto-install optionalDependencies for current platform
-    const child = spawn(npmCommand, ['install', '--no-audit', '--no-fund'], {
-      cwd: PLUGIN_ROOT,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: isWindows // On Windows, we need shell: true to find npm.cmd
-    });
-
-    child.stdout.on('data', (data) => {
-      // Suppress npm install output to stderr to avoid cluttering MCP logs
-      process.stderr.write(data);
-    });
-
-    child.stderr.on('data', (data) => {
-      process.stderr.write(data);
-    });
-
-    child.on('exit', (code) => {
-      if (code === 0) {
-        console.error('Dependencies installed successfully.');
-        resolve();
-      } else {
-        console.error('ERROR: Failed to install dependencies.');
-        console.error(`Please run manually: cd "${PLUGIN_ROOT}" && npm install`);
-        reject(new Error(`npm install failed with exit code ${code}`));
-      }
-    });
-
-    child.on('error', (err) => {
-      console.error(`ERROR: Failed to run npm install: ${err.message}`);
-      reject(err);
-    });
-  });
-}
-
 async function main() {
   try {
-    // Probe each required runtime dependency's package.json — not just the
-    // node_modules directory. A partial extraction (folder exists but the
-    // package is missing its manifest and lib/) would slip past an existsSync
-    // check on node_modules alone and crash the server with ERR_MODULE_NOT_FOUND
-    // *after* the wrapper has handed off to dist/mcp-server.js (#95 Bug 1).
-    const missing = findMissingDeps(PLUGIN_ROOT);
-    if (missing.length > 0) {
-      console.error(`Missing dependencies under node_modules: ${missing.join(', ')}`);
-      await runNpmInstall();
-    }
+    // Probes each required runtime dependency's package.json (#95 Bug 1) and
+    // installs when anything is missing. Shared with cli/episodic-memory.js;
+    // the mkdir lock inside serializes this against a SessionStart sync hook
+    // racing the same install (#17).
+    await ensureDepsInstalled(PLUGIN_ROOT);
 
     // Start the MCP server
     const mcpServerPath = join(PLUGIN_ROOT, 'dist', 'mcp-server.js');

@@ -3,12 +3,24 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { spawn } from 'child_process';
 import { realpathSync } from 'fs';
+import { ensureDepsInstalled } from './install-check.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(realpathSync(__filename));
 
+// Same resolution as mcp-server-wrapper.js: the hook invokes this script as
+// ${CLAUDE_PLUGIN_ROOT}/cli/episodic-memory.js, so both point at the same root.
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || join(__dirname, '..');
+
 const command = process.argv[2];
 const args = process.argv.slice(3);
+
+// Every real command ends up importing dist/ modules that require the
+// externalized runtime deps (better-sqlite3, onnxruntime-node, ...). A plugin
+// update wipes node_modules, and without this check the SessionStart sync hook
+// dies with a raw ERR_MODULE_NOT_FOUND until the MCP wrapper happens to
+// reinstall (#17). Help output stays dependency-free.
+const COMMANDS_NEEDING_DEPS = new Set(['index', 'search', 'show', 'stats', 'doctor', 'sync']);
 
 function runScript(scriptPath, args) {
   return new Promise((resolve, reject) => {
@@ -61,6 +73,15 @@ EXAMPLES:
 }
 
 async function main() {
+  if (COMMANDS_NEEDING_DEPS.has(command)) {
+    try {
+      await ensureDepsInstalled(PLUGIN_ROOT);
+    } catch (error) {
+      console.error(`episodic-memory: dependency install failed: ${error.message}`);
+      process.exit(1);
+    }
+  }
+
   try {
     const distDir = join(__dirname, '../dist');
 
