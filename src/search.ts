@@ -220,10 +220,12 @@ export async function searchConversations(
     // See #127 — whole-query contiguous substring matching returned empty for
     // typical multi-word searches that are not verbatim phrases.
     const { sql: textMatchSql, params: textMatchParams } = buildTextMatchClause(query);
+    // No distance column here: text hits are LIKE matches, not scored against
+    // the query embedding. Leaving distance undefined keeps them from
+    // masquerading as 100%-similarity vector hits in 'both' mode (#18).
     const textStmt = db.prepare(`
       SELECT
-        ${EXCHANGE_SELECT_COLUMNS},
-        0 as distance
+        ${EXCHANGE_SELECT_COLUMNS}
       FROM exchanges AS e
       WHERE ${textMatchSql}
         AND e.is_sidechain = 0
@@ -269,7 +271,7 @@ export async function searchConversations(
 
     return {
       exchange,
-      similarity: mode === 'text' ? undefined : l2DistanceToCosineSimilarity(row.distance),
+      similarity: typeof row.distance === 'number' ? l2DistanceToCosineSimilarity(row.distance) : undefined,
       snippet,
       summary
     } as SearchResult & { summary?: string };
