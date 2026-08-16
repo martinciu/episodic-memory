@@ -269,12 +269,13 @@ export async function searchConversations(
     const snippetText = exchange.userMessage.substring(0, 200).replace(/\s+/g, ' ').trim();
     const snippet = snippetText + (exchange.userMessage.length > 200 ? '...' : '');
 
-    return {
+    const result: SearchResult & { summary?: string } = {
       exchange,
       similarity: typeof row.distance === 'number' ? l2DistanceToCosineSimilarity(row.distance) : undefined,
       snippet,
       summary
-    } as SearchResult & { summary?: string };
+    };
+    return result;
   });
 }
 

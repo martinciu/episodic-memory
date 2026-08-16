@@ -45,7 +45,9 @@ export interface ConversationExchange {
 
 export interface SearchResult {
   exchange: ConversationExchange;
-  similarity: number;
+  // Absent for text-LIKE hits ('text' mode, and text-origin rows in 'both'):
+  // those are never scored against the query embedding (#18).
+  similarity?: number;
   snippet: string;
 }
 

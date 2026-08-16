@@ -226,12 +226,13 @@ export async function searchConversations(query, options = {}) {
         // Create snippet (first 200 chars, collapse newlines)
         const snippetText = exchange.userMessage.substring(0, 200).replace(/\s+/g, ' ').trim();
         const snippet = snippetText + (exchange.userMessage.length > 200 ? '...' : '');
-        return {
+        const result = {
             exchange,
             similarity: typeof row.distance === 'number' ? l2DistanceToCosineSimilarity(row.distance) : undefined,
             snippet,
             summary
         };
+        return result;
     });
 }
 // Helper function to count lines in a file efficiently
