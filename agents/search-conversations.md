@@ -72,6 +72,8 @@ Status: ...
 
 [Continue for all examined sources...]
 
+(Omit the `- X% match` suffix for sources that arrive without a similarity score — text-only matches in `both`/`text` mode carry none; never invent a percentage.)
+
 ### For Follow-Up
 
 Main agent can:

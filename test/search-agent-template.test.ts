@@ -39,6 +39,18 @@ describe('search-agent template', () => {
     expect(content).toMatch(/max 1000 words/);
   });
 
+  it('tells the model to omit the match percentage for score-less sources instead of inventing one (#18)', () => {
+    // Text-LIKE hits in 'both'/'text' mode arrive without a similarity score;
+    // without this rule the template leaves no legal way to render them and
+    // the model hallucinates a percentage. Both template copies must carry it.
+    const agentCopyPath = path.join(__dirname, '..', 'agents', 'search-conversations.md');
+    for (const p of [templatePath, agentCopyPath]) {
+      const content = fs.readFileSync(p, 'utf-8');
+      expect(content).toMatch(/[Oo]mit the .?- X% match.? suffix/);
+      expect(content).toMatch(/never invent/i);
+    }
+  });
+
   it('includes source metadata requirements', () => {
     const content = fs.readFileSync(templatePath, 'utf-8');
 

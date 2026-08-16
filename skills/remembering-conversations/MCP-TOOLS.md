@@ -66,7 +66,7 @@ Human-readable format with:
 - Project name and date
 - Conversation summary
 - Matched exchange snippet
-- Similarity score
+- Similarity score (vector hits only — text-only matches in `both`/`text` mode carry none)
 - File path and line numbers
 
 #### JSON

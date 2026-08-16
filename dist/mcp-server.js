@@ -25270,12 +25270,13 @@ async function searchConversations(query, options = {}) {
     }
     const snippetText = exchange.userMessage.substring(0, 200).replace(/\s+/g, " ").trim();
     const snippet = snippetText + (exchange.userMessage.length > 200 ? "..." : "");
-    return {
+    const result = {
       exchange,
       similarity: typeof row.distance === "number" ? l2DistanceToCosineSimilarity(row.distance) : void 0,
       snippet,
       summary
     };
+    return result;
   });
 }
 async function countLines(filePath) {
