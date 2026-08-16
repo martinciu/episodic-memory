@@ -62,9 +62,15 @@ describe('summarizeConversation — Claude resume fallback (cwd-mismatch recover
       .rejects.toBeInstanceOf(SummarizerSdkError);
   });
 
-  it('attaches the SDK subtype and session_id to the thrown SummarizerSdkError', async () => {
+  it('attaches the SDK subtype, session_id, and result text to the thrown SummarizerSdkError', async () => {
     vi.mocked(query).mockReturnValueOnce(asyncIterableFor([
-      { type: 'result', is_error: true, subtype: 'auth_failed', session_id: 'sdk-session-id-xyz' },
+      {
+        type: 'result',
+        is_error: true,
+        subtype: 'auth_failed',
+        session_id: 'sdk-session-id-xyz',
+        result: 'API Error: 401 invalid x-api-key',
+      },
     ]) as any);
 
     let caught: unknown;
@@ -76,6 +82,32 @@ describe('summarizeConversation — Claude resume fallback (cwd-mismatch recover
     expect(caught).toBeInstanceOf(SummarizerSdkError);
     expect((caught as SummarizerSdkError).subtype).toBe('auth_failed');
     expect((caught as SummarizerSdkError).sessionId).toBe('sdk-session-id-xyz');
+    expect((caught as SummarizerSdkError).resultText).toBe('API Error: 401 invalid x-api-key');
+    expect((caught as SummarizerSdkError).message).toContain('API Error: 401 invalid x-api-key');
+  });
+
+  it('leaves resultText undefined when the SDK result on an is_error message is not a string', async () => {
+    vi.mocked(query).mockReturnValueOnce(asyncIterableFor([
+      {
+        type: 'result',
+        is_error: true,
+        subtype: 'auth_failed',
+        session_id: 'sdk-session-id-xyz',
+        result: { unexpected: 'structured payload' },
+      },
+    ]) as any);
+
+    let caught: unknown;
+    try {
+      await summarizeConversation([makeExchange()], 'abc-123');
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(SummarizerSdkError);
+    expect((caught as SummarizerSdkError).resultText).toBeUndefined();
+    expect((caught as SummarizerSdkError).message).toBe(
+      'Summarizer SDK error: auth_failed (session sdk-session-id-xyz)'
+    );
   });
 
   it('retries without resume when the first call fails with is_error, returning the second call\'s summary', async () => {
@@ -101,6 +133,35 @@ describe('summarizeConversation — Claude resume fallback (cwd-mismatch recover
     const secondPrompt = vi.mocked(query).mock.calls[1][0].prompt as string;
     expect(secondPrompt).toContain('How do I rebase against origin/main?');
     expect(secondPrompt).toContain('Use git rebase origin/main');
+  });
+
+  it('retries without resume when resume dies on an API error reported as subtype success (invalid thinking signature, #16)', async () => {
+    // The production shape: resuming an old session replays thinking blocks
+    // whose signatures are no longer valid; the SDK surfaces the API 400 as a
+    // result message with subtype 'success' and is_error true.
+    vi.mocked(query)
+      .mockReturnValueOnce(asyncIterableFor([
+        {
+          type: 'result',
+          is_error: true,
+          subtype: 'success',
+          api_error_status: 400,
+          result: 'API Error: 400 messages.1.content.0: Invalid `signature` in `thinking` block',
+          session_id: 'abc-123',
+        },
+      ]) as any)
+      .mockReturnValueOnce(asyncIterableFor([
+        { type: 'result', is_error: false, result: '<summary>Recovered summary text.</summary>' },
+      ]) as any);
+
+    const result = await summarizeConversation([makeExchange()], 'abc-123');
+    expect(result).toBe('Recovered summary text.');
+    expect(vi.mocked(query)).toHaveBeenCalledTimes(2);
+
+    const secondCallOptions = vi.mocked(query).mock.calls[1][0].options as any;
+    expect(secondCallOptions.resume).toBeUndefined();
+    const secondPrompt = vi.mocked(query).mock.calls[1][0].prompt as string;
+    expect(secondPrompt).toContain('How do I rebase against origin/main?');
   });
 
   it('passes the session\'s recorded cwd to the SDK when the path still exists on disk', async () => {

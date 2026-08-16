@@ -15,20 +15,41 @@ import {
  * Thrown by callClaude when the SDK yields an `is_error: true` result message.
  * Carries the SDK's `subtype` and `session_id` as typed fields so callers can
  * dispatch on structural metadata rather than parsing error message text.
+ * `resultText` is the SDK's `result` string — on API failures that's where the
+ * actual error lives (e.g. `API Error: 400 …`), so it goes into the message.
  */
 export class SummarizerSdkError extends Error {
-  constructor(public readonly subtype: string, public readonly sessionId?: string) {
-    super(`Summarizer SDK error: ${subtype}${sessionId ? ` (session ${sessionId})` : ''}`);
+  constructor(
+    public readonly subtype: string,
+    public readonly sessionId?: string,
+    public readonly resultText?: string
+  ) {
+    super(
+      `Summarizer SDK error: ${subtype}` +
+      `${sessionId ? ` (session ${sessionId})` : ''}` +
+      `${resultText ? `: ${resultText}` : ''}`
+    );
     this.name = 'SummarizerSdkError';
   }
 }
 
 /**
- * True when the SDK's reported failure subtype indicates resume couldn't find
- * the session — the trigger for the non-resume fallback in summarizeConversation.
+ * True when the SDK's reported failure indicates the resume attempt itself is
+ * the problem — the trigger for the non-resume fallback in summarizeConversation.
+ *
+ * - `error_during_execution`: resume couldn't find the session (cwd mismatch).
+ * - `success` (+ is_error): the SDK wraps API errors from replaying the resumed
+ *   transcript this way — e.g. `400 Invalid signature in thinking block` on
+ *   sessions old enough that their thinking-block signatures no longer verify
+ *   (#16). Permanent for that session; a fresh non-resume call side-steps it.
+ *
+ * Only meaningful for errors thrown by a resume attempt: subtype `success`
+ * wraps ANY API error (429/529 included), so callers must additionally check
+ * that the failed call actually resumed a session before trusting this.
  */
 export function isResumeFailure(error: unknown): boolean {
-  return error instanceof SummarizerSdkError && error.subtype === 'error_during_execution';
+  return error instanceof SummarizerSdkError &&
+    (error.subtype === 'error_during_execution' || error.subtype === 'success');
 }
 
 export interface CodexSummarizerCommand {
@@ -194,7 +215,8 @@ async function callClaude(prompt: string, sessionId?: string, useFallback = fals
     if (message && typeof message === 'object' && 'type' in message && message.type === 'result') {
       // Throw on is_error — otherwise we return `message.result` (undefined) and the SDK's later iterator throw never fires.
       if ((message as any).is_error) {
-        throw new SummarizerSdkError((message as any).subtype || 'unknown', (message as any).session_id);
+        const resultText = typeof (message as any).result === 'string' ? (message as any).result : undefined;
+        throw new SummarizerSdkError((message as any).subtype || 'unknown', (message as any).session_id, resultText);
       }
       const result = (message as any).result;
 
@@ -533,9 +555,12 @@ ${conversationText}`;
       const result = await callClaude(prompt, claudeSessionId, false, cwd);
       return extractSummary(result);
     } catch (error) {
-      // Resume fails when the session's cwd doesn't exist on disk — retry without resume and feed the conversation text directly.
+      // Retry without resume, feeding the conversation text directly. The
+      // `claudeSessionId &&` conjunct is load-bearing, not redundant: subtype
+      // 'success' wraps ANY API error, so isResumeFailure only means "resume is
+      // the problem" when this call actually attempted a resume.
       if (claudeSessionId && isResumeFailure(error)) {
-        console.log(`    resume failed for ${claudeSessionId} (${(error as Error).message}); retrying without resume`);
+        console.log(`    SDK error during resume of ${claudeSessionId} (${(error as Error).message}); retrying without resume`);
         const fullPrompt = prompt + '\n\n' + formatConversationText(exchanges);
         const result = await callClaude(fullPrompt);
         return extractSummary(result);

@@ -3,15 +3,28 @@ import { ConversationExchange } from './types.js';
  * Thrown by callClaude when the SDK yields an `is_error: true` result message.
  * Carries the SDK's `subtype` and `session_id` as typed fields so callers can
  * dispatch on structural metadata rather than parsing error message text.
+ * `resultText` is the SDK's `result` string — on API failures that's where the
+ * actual error lives (e.g. `API Error: 400 …`), so it goes into the message.
  */
 export declare class SummarizerSdkError extends Error {
     readonly subtype: string;
     readonly sessionId?: string | undefined;
-    constructor(subtype: string, sessionId?: string | undefined);
+    readonly resultText?: string | undefined;
+    constructor(subtype: string, sessionId?: string | undefined, resultText?: string | undefined);
 }
 /**
- * True when the SDK's reported failure subtype indicates resume couldn't find
- * the session — the trigger for the non-resume fallback in summarizeConversation.
+ * True when the SDK's reported failure indicates the resume attempt itself is
+ * the problem — the trigger for the non-resume fallback in summarizeConversation.
+ *
+ * - `error_during_execution`: resume couldn't find the session (cwd mismatch).
+ * - `success` (+ is_error): the SDK wraps API errors from replaying the resumed
+ *   transcript this way — e.g. `400 Invalid signature in thinking block` on
+ *   sessions old enough that their thinking-block signatures no longer verify
+ *   (#16). Permanent for that session; a fresh non-resume call side-steps it.
+ *
+ * Only meaningful for errors thrown by a resume attempt: subtype `success`
+ * wraps ANY API error (429/529 included), so callers must additionally check
+ * that the failed call actually resumed a session before trusting this.
  */
 export declare function isResumeFailure(error: unknown): boolean;
 export interface CodexSummarizerCommand {

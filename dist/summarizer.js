@@ -9,23 +9,40 @@ import { codexVersionRequirementMessage, parseCodexCliVersion, versionMeetsMinim
  * Thrown by callClaude when the SDK yields an `is_error: true` result message.
  * Carries the SDK's `subtype` and `session_id` as typed fields so callers can
  * dispatch on structural metadata rather than parsing error message text.
+ * `resultText` is the SDK's `result` string — on API failures that's where the
+ * actual error lives (e.g. `API Error: 400 …`), so it goes into the message.
  */
 export class SummarizerSdkError extends Error {
     subtype;
     sessionId;
-    constructor(subtype, sessionId) {
-        super(`Summarizer SDK error: ${subtype}${sessionId ? ` (session ${sessionId})` : ''}`);
+    resultText;
+    constructor(subtype, sessionId, resultText) {
+        super(`Summarizer SDK error: ${subtype}` +
+            `${sessionId ? ` (session ${sessionId})` : ''}` +
+            `${resultText ? `: ${resultText}` : ''}`);
         this.subtype = subtype;
         this.sessionId = sessionId;
+        this.resultText = resultText;
         this.name = 'SummarizerSdkError';
     }
 }
 /**
- * True when the SDK's reported failure subtype indicates resume couldn't find
- * the session — the trigger for the non-resume fallback in summarizeConversation.
+ * True when the SDK's reported failure indicates the resume attempt itself is
+ * the problem — the trigger for the non-resume fallback in summarizeConversation.
+ *
+ * - `error_during_execution`: resume couldn't find the session (cwd mismatch).
+ * - `success` (+ is_error): the SDK wraps API errors from replaying the resumed
+ *   transcript this way — e.g. `400 Invalid signature in thinking block` on
+ *   sessions old enough that their thinking-block signatures no longer verify
+ *   (#16). Permanent for that session; a fresh non-resume call side-steps it.
+ *
+ * Only meaningful for errors thrown by a resume attempt: subtype `success`
+ * wraps ANY API error (429/529 included), so callers must additionally check
+ * that the failed call actually resumed a session before trusting this.
  */
 export function isResumeFailure(error) {
-    return error instanceof SummarizerSdkError && error.subtype === 'error_during_execution';
+    return error instanceof SummarizerSdkError &&
+        (error.subtype === 'error_during_execution' || error.subtype === 'success');
 }
 /**
  * Get API environment overrides for summarization calls.
@@ -161,7 +178,8 @@ async function callClaude(prompt, sessionId, useFallback = false, cwd) {
         if (message && typeof message === 'object' && 'type' in message && message.type === 'result') {
             // Throw on is_error — otherwise we return `message.result` (undefined) and the SDK's later iterator throw never fires.
             if (message.is_error) {
-                throw new SummarizerSdkError(message.subtype || 'unknown', message.session_id);
+                const resultText = typeof message.result === 'string' ? message.result : undefined;
+                throw new SummarizerSdkError(message.subtype || 'unknown', message.session_id, resultText);
             }
             const result = message.result;
             // Check if result is an API error (SDK returns errors as result strings)
@@ -463,9 +481,12 @@ ${conversationText}`;
             return extractSummary(result);
         }
         catch (error) {
-            // Resume fails when the session's cwd doesn't exist on disk — retry without resume and feed the conversation text directly.
+            // Retry without resume, feeding the conversation text directly. The
+            // `claudeSessionId &&` conjunct is load-bearing, not redundant: subtype
+            // 'success' wraps ANY API error, so isResumeFailure only means "resume is
+            // the problem" when this call actually attempted a resume.
             if (claudeSessionId && isResumeFailure(error)) {
-                console.log(`    resume failed for ${claudeSessionId} (${error.message}); retrying without resume`);
+                console.log(`    SDK error during resume of ${claudeSessionId} (${error.message}); retrying without resume`);
                 const fullPrompt = prompt + '\n\n' + formatConversationText(exchanges);
                 const result = await callClaude(fullPrompt);
                 return extractSummary(result);
