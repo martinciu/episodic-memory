@@ -84,12 +84,13 @@ Follow this every time:
 
 ## Upstream sync
 
-Upstream (`obra/episodic-memory`) has been frozen since 2026-05-21 but may revive. When it does, pull changes in like this:
+Upstream (`obra/episodic-memory`) revived in September 2026 after a freeze since 2026-05-21. The fork was last synced at upstream v1.6.0. Pull changes in like this:
 
 1. `git fetch upstream` then `git merge upstream/main` — into a branch created off `main`
 2. Run the full test suite: `npm test`
 3. Version bump, per Version management above
-4. Push the branch and land it via PR
+4. Push the branch and land it via PR **with a merge commit — never squash or rebase**. The merge commit is what makes `upstream/main` an ancestor of `main`; without it, the next sync re-conflicts on every upstream commit since the last real merge. Verify after landing: `git merge-base --is-ancestor upstream/main origin/main`.
+5. Fast-forward the mirror: `git push origin upstream/main:refs/heads/obra`
 
 ## Things to be careful with
 
