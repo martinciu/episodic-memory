@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-09-08
+
+Adds a fifth conversation source, an off switch for automatic syncing, and two fixes for real-world resource problems.
+
+### Added
+
+- Oh My Pi (OMP) conversations are now indexed and searchable, alongside Claude Code, Codex, Cursor, and opencode. Sessions in `~/.omp/agent/sessions` are picked up automatically; the parser follows the active branch of a session's message tree. Built to the format reported in the issue — if your OMP transcripts index oddly, please open an issue. Thanks to @rhlsthrm for the request and format details (#148).
+- `EPISODIC_MEMORY_DISABLE_AUTO_SYNC=1` fully turns off the automatic background sync that runs on session start, for anyone who prefers to sync on a schedule (cron or a scheduled task) or pause indexing entirely. Unlike `EPISODIC_MEMORY_SKIP_SUMMARIES`, this stops the copy and index work too. A manual `sync` you run yourself is unaffected. Thanks to @Nogalj (#163).
+- AWS Bedrock is a supported summarization backend. Set `CLAUDE_CODE_USE_BEDROCK=1` with your AWS credentials and region in the plugin's environment and summaries route through Bedrock; the metered-billing warning correctly stays quiet since no `ANTHROPIC_API_KEY` is involved. The credential passthrough is tested; the live Bedrock call depends on your AWS setup. Thanks to @daniel-butler (#44).
+
+### Fixed
+
+- Syncing no longer re-embeds work it has already indexed. The background sync had its own indexing loop that re-embedded every message of every file it copied, on every run — so a long-lived session's transcript was re-processed in full each time, and the cost grew with the file. It now embeds only new messages, matching the incremental indexer. On large corpora this turns minutes of repeated work per sync into seconds. Thanks to @dkindlund (#152).
+- A `DO NOT INDEX` marker is now honored even in very large transcripts. Files above the ~512 MB string limit were scanned only partially and, on the error path, indexed anyway — so the marker could be silently missed. The check now fails closed: if a large file can't be fully verified as marked, it is not indexed. Thanks to @dkindlund (#152).
+- Foreign summarizer payloads can no longer bloat the index. Some third-party tools embed an entire conversation transcript into a single prompt, which was then stored as one multi-megabyte "message" — in one report, 97% of a 3 GB index. Messages above a size cap (256 KB by default, `EPISODIC_MEMORY_MAX_MESSAGE_BYTES` to change) are now skipped before embedding, with a count logged per run. Normal turns are thousands of times smaller and are unaffected. Thanks to @danielsimonjr (#139).
+- Failed dependency installs no longer pile up. When the MCP server wrapper had to run `npm install` and the connection timed out, the install child was orphaned and kept running, and each retry started another — several could end up competing and starving each other so none finished. The wrapper now kills its install child when it exits and holds a single-install lock so retries can't stack. Thanks to @chernobylx (#161).
+
+## [1.5.0] - 2026-09-08
+
+This release closes a summarizer security hole, adds two new coding tools to what you can search, makes search itself return the results it used to miss, and hardens install and summarization against a long list of real-world failures.
+
+### Security
+
+- The background summarizer can no longer act inside your live session. It used to resume the session with your tools, your MCP servers, and your settings all loaded, so a summarize pass could execute pending work and, in at least one report, commit to a working repo. It now runs with no tools, no user MCP servers, and no user settings — it can only write a summary. If you saw a background agent modify files, launch extra MCP windows per conversation, or fire "task finished" notifications for old sessions, that is fixed (#108, #149, #106, #136).
+
+### Added
+
+- Search now covers Cursor conversations. Live Cursor transcripts are indexed automatically, and a one-time `import-cursor-history` command backfills your existing history from Cursor's local database (#113).
+- Search now covers opencode conversations, including AI summaries for them (#117).
+- Work done inside subagents and `Workflow` runs is searchable at last. These "sidechain" conversations were indexed but hidden from every search — in orchestration-heavy sessions that was most of the content. They now appear in results, ranked just below equally-relevant main-thread matches. Pass `include_sidechains: false` (or `--exclude-sidechains`) to restore the old main-thread-only behavior (#128).
+- Three new environment switches: `EPISODIC_MEMORY_SKIP_SUMMARIES=1` turns off the summarization pass while still indexing (#159); `EPISODIC_MEMORY_SUMMARY_TIMEOUT_MS` caps how long one summary may run before it is abandoned (#160); `EPISODIC_MEMORY_ALLOW_METERED_API=1` acknowledges and silences the new metered-billing warning below (#104).
+
+### Changed
+
+- Sidechain conversations now surface in search by default (see Added). If you prefer the previous behavior, opt out per query.
+
+### Fixed
+
+- Multi-word text searches return results again. A `text`-mode query used to match only as one exact contiguous string, so almost any multi-word search came back empty. It now matches when every word appears, in any order (#144, #127).
+- Date-filtered searches no longer come back empty. A search narrowed with `after`/`before` in vector mode could return nothing even when matches existed, because the date filter was applied after the nearest-neighbor cutoff. It now over-fetches so the date window is honored (#126).
+- Summarization is far more robust. It now recovers instead of failing permanently when a conversation's original project is gone (#122), when the resume subprocess exits nonzero (#147), or when a conversation ends on an extended-thinking turn (#110); it reports the real error text and stops a whole batch fast on an expired login instead of burning ~32 minutes on doomed calls (#145, #138); and a single wedged summary can no longer stall every later sync, thanks to a timeout (#160).
+- The summarizer warns before spending real money. If a global `ANTHROPIC_API_KEY` is set, background summaries bill the metered API instead of your Claude subscription; it now prints a one-time warning so the cost is visible. Set `EPISODIC_MEMORY_ALLOW_METERED_API=1` to acknowledge it (#104).
+- Install fails loudly and clearly when the native database binding cannot load, instead of exiting clean and then crashing on first use with a confusing error (#150, #100).
+- A host that cannot load the embedding backend no longer crashes at session start. Copying and summarization keep working; only semantic indexing is skipped, with a clear message (#135, #137).
+- A single dangling symlink in your projects folder no longer crashes sync, index, verify, and rebuild (#142).
+- A transcript that disappears mid-run no longer aborts the whole index; the run skips it and continues (#121).
+- On Apple Silicon, embedding no longer pegs every CPU core during indexing; thread use is capped, with an env override, and no effect on other platforms (#124).
+- Displayed conversation timestamps are pinned to a fixed format, so they no longer show a day-shifted or reordered date on non-US locales (#120, #130).
+- Concurrent workers are safer: the index command now shares the single-instance lock with background sync, and a busy-timeout absorbs brief write overlaps (#156, #101).
+- The bundled search agent's description was invalid YAML; it is now valid (#153).
+- The test suite no longer writes into your real configuration directory (#119).
+
+### Internal
+
+- Continuous integration builds and tests every pull request, including from forks, on Node 22 and 24 (#164). Added isolated MCP server integration tests (#157). The committed build output is now regenerated reproducibly from source.
+
 ## [1.4.2-martinciu.4] - 2026-08-28 (fork: martinciu/episodic-memory)
 
 ### Fixed

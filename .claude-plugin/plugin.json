@@ -1,7 +1,7 @@
 {
   "name": "episodic-memory",
   "version": "1.4.2-martinciu.4",
-  "description": "Semantic search for Claude Code conversations — multilingual fork (bge-m3 embeddings) with upstream fixes #108/#124/#133/#144.",
+  "description": "Semantic search for Claude Code conversations — multilingual fork (bge-m3 embeddings) tracking upstream obra/episodic-memory.",
   "author": {
     "name": "Jesse Vincent",
     "email": "jesse@fsck.com"
