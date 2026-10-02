@@ -8,7 +8,7 @@ import { summarizeConversation } from './summarizer.js';
 import { ConversationExchange } from './types.js';
 import { getArchiveDir, getExcludedProjects, getConversationSourceDirs, findJsonlFiles, statIfExists } from './paths.js';
 import { formatErrorSentinel, shouldQueueForSummary } from './summary-sentinel.js';
-import { getMaxMessageBytes, isOversizeExchange } from './message-size.js';
+import { capExchangeForIndex, getMaxMessageBytes, isOversizeExchange } from './message-size.js';
 
 // Set max output tokens for Claude SDK (used by summarizer)
 process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '20000';
@@ -51,7 +51,7 @@ export async function indexConversations(
   await initEmbeddings();
 
   const maxMessageBytes = getMaxMessageBytes();
-  let oversizeSkipped = 0;
+  let oversizeTruncated = 0;
 
   if (noSummaries) {
     console.log('⚠️  Running in no-summaries mode (skipping AI summaries)');
@@ -169,13 +169,13 @@ export async function indexConversations(
 
     // Now process embeddings and DB inserts (fast, sequential is fine)
     for (const conv of toProcess) {
-      for (const exchange of conv.exchanges) {
-        // Skip oversize single messages BEFORE embedding — a foreign
-        // summarizer's pasted transcript is noise, and embedding it is the
-        // expensive waste (#139).
+      for (let exchange of conv.exchanges) {
+        // Fork: truncate oversize messages BEFORE embedding instead of skipping
+        // the exchange (#139) — skipping would also drop the assistant's reply.
+        // insertExchange re-applies the cap as a backstop. See message-size.ts.
         if (isOversizeExchange(exchange, maxMessageBytes)) {
-          oversizeSkipped++;
-          continue;
+          oversizeTruncated++;
+          exchange = capExchangeForIndex(exchange, maxMessageBytes);
         }
         const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
         const embedding = await generateExchangeEmbedding(
@@ -201,8 +201,8 @@ export async function indexConversations(
   }
   } // end sourceDir loop
 
-  if (oversizeSkipped > 0) {
-    console.log(`  Skipped ${oversizeSkipped} oversize exchange(s) (> ${maxMessageBytes} bytes; set EPISODIC_MEMORY_MAX_MESSAGE_BYTES to change) — likely embedded-transcript payloads (#139)`);
+  if (oversizeTruncated > 0) {
+    console.log(`  Truncated ${oversizeTruncated} oversize exchange(s) to ${maxMessageBytes} bytes per message (set EPISODIC_MEMORY_MAX_MESSAGE_BYTES to change; 0 disables) (#139)`);
   }
 
   db.close();
@@ -275,14 +275,14 @@ export async function indexSession(sessionId: string, concurrency: number = 1, n
 
         // Index
         const maxMessageBytes = getMaxMessageBytes();
-        let oversizeSkipped = 0;
-        for (const exchange of exchanges) {
-          // Skip oversize single messages BEFORE embedding — a foreign
-          // summarizer's pasted transcript is noise, and embedding it is the
-          // expensive waste (#139).
+        let oversizeTruncated = 0;
+        for (let exchange of exchanges) {
+          // Fork: truncate oversize messages BEFORE embedding instead of skipping
+          // the exchange (#139) — skipping would also drop the assistant's reply.
+          // insertExchange re-applies the cap as a backstop. See message-size.ts.
           if (isOversizeExchange(exchange, maxMessageBytes)) {
-            oversizeSkipped++;
-            continue;
+            oversizeTruncated++;
+            exchange = capExchangeForIndex(exchange, maxMessageBytes);
           }
           const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
           const embedding = await generateExchangeEmbedding(
@@ -293,8 +293,8 @@ export async function indexSession(sessionId: string, concurrency: number = 1, n
           insertExchange(db, exchange, embedding, toolNames);
         }
 
-        if (oversizeSkipped > 0) {
-          console.log(`  Skipped ${oversizeSkipped} oversize exchange(s) (> ${maxMessageBytes} bytes; set EPISODIC_MEMORY_MAX_MESSAGE_BYTES to change) — likely embedded-transcript payloads (#139)`);
+        if (oversizeTruncated > 0) {
+          console.log(`  Truncated ${oversizeTruncated} oversize exchange(s) to ${maxMessageBytes} bytes per message (set EPISODIC_MEMORY_MAX_MESSAGE_BYTES to change; 0 disables) (#139)`);
         }
 
         console.log(`✅ Indexed session ${sessionId}: ${exchanges.length} exchanges`);
@@ -422,15 +422,15 @@ export async function indexUnprocessed(concurrency: number = 1, noSummaries: boo
   // Now index embeddings
   console.log(`\nIndexing embeddings...`);
   const maxMessageBytes = getMaxMessageBytes();
-  let oversizeSkipped = 0;
+  let oversizeTruncated = 0;
   for (const conv of unprocessed) {
-    for (const exchange of conv.exchanges) {
-      // Skip oversize single messages BEFORE embedding — a foreign
-      // summarizer's pasted transcript is noise, and embedding it is the
-      // expensive waste (#139).
+    for (let exchange of conv.exchanges) {
+      // Fork: truncate oversize messages BEFORE embedding instead of skipping
+      // the exchange (#139) — skipping would also drop the assistant's reply.
+      // insertExchange re-applies the cap as a backstop. See message-size.ts.
       if (isOversizeExchange(exchange, maxMessageBytes)) {
-        oversizeSkipped++;
-        continue;
+        oversizeTruncated++;
+        exchange = capExchangeForIndex(exchange, maxMessageBytes);
       }
       const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
       const embedding = await generateExchangeEmbedding(
@@ -442,8 +442,8 @@ export async function indexUnprocessed(concurrency: number = 1, noSummaries: boo
     }
   }
 
-  if (oversizeSkipped > 0) {
-    console.log(`  Skipped ${oversizeSkipped} oversize exchange(s) (> ${maxMessageBytes} bytes; set EPISODIC_MEMORY_MAX_MESSAGE_BYTES to change) — likely embedded-transcript payloads (#139)`);
+  if (oversizeTruncated > 0) {
+    console.log(`  Truncated ${oversizeTruncated} oversize exchange(s) to ${maxMessageBytes} bytes per message (set EPISODIC_MEMORY_MAX_MESSAGE_BYTES to change; 0 disables) (#139)`);
   }
 
   db.close();

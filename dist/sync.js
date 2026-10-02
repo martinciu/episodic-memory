@@ -4,7 +4,7 @@ import { StringDecoder } from 'string_decoder';
 import { SUMMARIZER_CONTEXT_MARKER } from './constants.js';
 import { getExcludedProjects, findJsonlFiles, statIfExists } from './paths.js';
 import { formatErrorSentinel, shouldQueueForSummary } from './summary-sentinel.js';
-import { getMaxMessageBytes, isOversizeExchange } from './message-size.js';
+import { capExchangeForIndex, getMaxMessageBytes, isOversizeExchange } from './message-size.js';
 const EXCLUSION_MARKERS = [
     '<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>',
     'Only use NO_INSIGHTS_FOUND',
@@ -258,7 +258,7 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
             const { generateExchangeEmbedding } = embeddings;
             const db = initDatabase();
             const maxMessageBytes = getMaxMessageBytes();
-            let oversizeSkipped = 0;
+            let oversizeTruncated = 0;
             for (const file of filesToIndex) {
                 try {
                     // Check for DO NOT INDEX marker
@@ -276,13 +276,13 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
                     const newExchanges = maxIndexedLine > 0
                         ? exchanges.filter(e => e.lineStart > maxIndexedLine)
                         : exchanges;
-                    for (const exchange of newExchanges) {
-                        // Skip oversize single messages BEFORE embedding — a foreign
-                        // summarizer's pasted transcript is noise, and embedding it is the
-                        // expensive waste (#139).
+                    for (let exchange of newExchanges) {
+                        // Fork: truncate oversize messages BEFORE embedding instead of skipping
+                        // the exchange (#139) — skipping would also drop the assistant's reply.
+                        // insertExchange re-applies the cap as a backstop. See message-size.ts.
                         if (isOversizeExchange(exchange, maxMessageBytes)) {
-                            oversizeSkipped++;
-                            continue;
+                            oversizeTruncated++;
+                            exchange = capExchangeForIndex(exchange, maxMessageBytes);
                         }
                         const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
                         const embedding = await generateExchangeEmbedding(exchange.userMessage, exchange.assistantMessage, toolNames);
@@ -297,8 +297,8 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
                     });
                 }
             }
-            if (oversizeSkipped > 0) {
-                console.log(`  Skipped ${oversizeSkipped} oversize exchange(s) (> ${maxMessageBytes} bytes; set EPISODIC_MEMORY_MAX_MESSAGE_BYTES to change) — likely embedded-transcript payloads (#139)`);
+            if (oversizeTruncated > 0) {
+                console.log(`  Truncated ${oversizeTruncated} oversize exchange(s) to ${maxMessageBytes} bytes per message (set EPISODIC_MEMORY_MAX_MESSAGE_BYTES to change; 0 disables) (#139)`);
             }
             db.close();
         }

@@ -76,6 +76,11 @@ describe('message-size: policy unit', () => {
     expect(isOversizeExchange(exchange, 100)).toBe(false);
   });
 
+  it('isOversizeExchange is false when the cap is disabled (0)', () => {
+    const exchange = { userMessage: 'x'.repeat(10_000), assistantMessage: 'ok' };
+    expect(isOversizeExchange(exchange, 0)).toBe(false);
+  });
+
   it('counts UTF-8 bytes, not characters (multi-byte)', () => {
     // '🚀' is 4 UTF-8 bytes. 30 of them = 120 bytes > 100, but only 60 chars.
     const exchange = { userMessage: '🚀'.repeat(30), assistantMessage: 'ok' };
@@ -92,14 +97,28 @@ describe('message-size: policy unit', () => {
     expect(getMaxMessageBytes({ EPISODIC_MEMORY_MAX_MESSAGE_BYTES: '4096' })).toBe(4096);
   });
 
-  it('getMaxMessageBytes ignores invalid, zero, and negative overrides', () => {
+  it('getMaxMessageBytes falls back to the default on non-numeric values', () => {
     expect(getMaxMessageBytes({ EPISODIC_MEMORY_MAX_MESSAGE_BYTES: 'nonsense' })).toBe(DEFAULT_MAX_MESSAGE_BYTES);
-    expect(getMaxMessageBytes({ EPISODIC_MEMORY_MAX_MESSAGE_BYTES: '0' })).toBe(DEFAULT_MAX_MESSAGE_BYTES);
-    expect(getMaxMessageBytes({ EPISODIC_MEMORY_MAX_MESSAGE_BYTES: '-100' })).toBe(DEFAULT_MAX_MESSAGE_BYTES);
+    expect(getMaxMessageBytes({ EPISODIC_MEMORY_MAX_MESSAGE_BYTES: '' })).toBe(DEFAULT_MAX_MESSAGE_BYTES);
+  });
+
+  // Fork: parseInt('256K') is 256 — a cap that would cut every message to a stub.
+  it.each(['256K', '1e6', '12abc'])('getMaxMessageBytes falls back to the default on a partial-numeric value (%s)', (raw) => {
+    expect(getMaxMessageBytes({ EPISODIC_MEMORY_MAX_MESSAGE_BYTES: raw })).toBe(DEFAULT_MAX_MESSAGE_BYTES);
+  });
+
+  // Fork: 0 (or a negative value) disables the cap instead of meaning "default".
+  it('getMaxMessageBytes returns 0 (cap disabled) for zero and negative overrides', () => {
+    expect(getMaxMessageBytes({ EPISODIC_MEMORY_MAX_MESSAGE_BYTES: '0' })).toBe(0);
+    expect(getMaxMessageBytes({ EPISODIC_MEMORY_MAX_MESSAGE_BYTES: '-100' })).toBe(0);
   });
 });
 
-describe('sync: oversize exchange guard (#139)', () => {
+// Fork policy: an oversize exchange is TRUNCATED before embedding, not skipped
+// (upstream #139 skips it, which also drops the assistant's reply — on real
+// data those are skill injections and genuine pastes, not just foreign
+// summarizer prompts).
+describe('sync: oversize exchange guard (#139, truncate variant)', () => {
   let testDir: string;
   let sourceDir: string;
   let destDir: string;
@@ -142,7 +161,7 @@ describe('sync: oversize exchange guard (#139)', () => {
     return rows.map(r => r.user_message);
   }
 
-  it('indexes the normal exchange, skips the oversize one before embedding, and logs the skip', async () => {
+  it('indexes both exchanges, truncates the oversize one before embedding, and logs the truncation', async () => {
     const logs: string[] = [];
     const logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
       logs.push(args.join(' '));
@@ -156,16 +175,20 @@ describe('sync: oversize exchange guard (#139)', () => {
     }
 
     const msgs = userMessages();
-    // Normal exchange present, oversize absent.
+    expect(msgs.length).toBe(2);
     expect(msgs.some(m => m.includes('a normal small question'))).toBe(true);
-    expect(msgs.some(m => m.length > 300 * 1024)).toBe(false);
-    expect(msgs.length).toBe(1);
+    const capped = msgs.find(m => m.startsWith('xxx'))!;
+    expect(capped).toContain('[truncated by episodic-memory:');
+    expect(capped.length).toBeLessThan(DEFAULT_MAX_MESSAGE_BYTES + 200);
 
-    // Skip happened BEFORE embedding: only the normal exchange was embedded.
-    expect(embedSpy).toHaveBeenCalledTimes(1);
+    // Truncation happened BEFORE embedding: the embedder never saw the full payload.
+    expect(embedSpy).toHaveBeenCalledTimes(2);
+    for (const call of embedSpy.mock.calls as unknown as [string, string][]) {
+      expect(call[0].length).toBeLessThan(DEFAULT_MAX_MESSAGE_BYTES + 200);
+    }
 
-    // A single log line reports the skip.
-    expect(logs.some(l => /Skipped 1 oversize exchange/.test(l))).toBe(true);
+    // A single log line reports the truncation.
+    expect(logs.some(l => /Truncated 1 oversize exchange/.test(l))).toBe(true);
   });
 
   it('honors a huge EPISODIC_MEMORY_MAX_MESSAGE_BYTES override (previously-oversize exchange now indexes)', async () => {
@@ -181,17 +204,30 @@ describe('sync: oversize exchange guard (#139)', () => {
     expect(embedSpy).toHaveBeenCalledTimes(2);
   });
 
-  it('honors a tiny EPISODIC_MEMORY_MAX_MESSAGE_BYTES override (even the normal exchange is skipped)', async () => {
+  it('honors a tiny EPISODIC_MEMORY_MAX_MESSAGE_BYTES override (even the normal exchange is truncated)', async () => {
     process.env.EPISODIC_MEMORY_MAX_MESSAGE_BYTES = '4';
 
     await syncConversations(sourceDir, destDir, { skipSummaries: true });
 
-    expect(userMessages().length).toBe(0);
-    expect(embedSpy).toHaveBeenCalledTimes(0);
+    const msgs = userMessages();
+    expect(msgs.length).toBe(2);
+    expect(msgs.every(m => m.includes('[truncated by episodic-memory:'))).toBe(true);
+    expect(msgs.some(m => m.startsWith('a no\n\n[truncated'))).toBe(true);
+    expect(embedSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('"0" disables the cap (the oversize exchange indexes in full)', async () => {
+    process.env.EPISODIC_MEMORY_MAX_MESSAGE_BYTES = '0';
+
+    await syncConversations(sourceDir, destDir, { skipSummaries: true });
+
+    const msgs = userMessages();
+    expect(msgs.length).toBe(2);
+    expect(msgs).toContain(OVERSIZE_TEXT);
   });
 });
 
-describe('indexer: oversize exchange guard via indexUnprocessed (#139)', () => {
+describe('indexer: oversize exchange guard via indexUnprocessed (#139, truncate variant)', () => {
   let testDir: string;
   let projectsDir: string;
   let configDir: string;
@@ -238,18 +274,31 @@ describe('indexer: oversize exchange guard via indexUnprocessed (#139)', () => {
     return rows.map(r => r.user_message);
   }
 
-  it('does not index or embed the oversize exchange through indexUnprocessed', async () => {
-    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  it('indexes the oversize exchange truncated, with its assistant reply intact', async () => {
+    const logs: string[] = [];
+    const logSpy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      logs.push(args.join(' '));
+    });
     try {
       await indexUnprocessed(1, true);
     } finally {
       logSpy.mockRestore();
     }
 
-    const msgs = userMessages();
-    expect(msgs.length).toBe(1);
-    expect(msgs.some(m => m.includes('a normal small question'))).toBe(true);
-    expect(msgs.some(m => m.length > 300 * 1024)).toBe(false);
-    expect(embedSpy).toHaveBeenCalledTimes(1);
+    const db = new Database(dbPath);
+    const rows = db.prepare('SELECT user_message, assistant_message FROM exchanges').all() as {
+      user_message: string;
+      assistant_message: string;
+    }[];
+    db.close();
+
+    expect(rows.length).toBe(2);
+    expect(rows.some(r => r.user_message.includes('a normal small question'))).toBe(true);
+    const capped = rows.find(r => r.user_message.startsWith('xxx'))!;
+    expect(capped.user_message).toContain('[truncated by episodic-memory:');
+    expect(capped.user_message.length).toBeLessThan(DEFAULT_MAX_MESSAGE_BYTES + 200);
+    expect(capped.assistant_message).toBe('answer 2');
+    expect(embedSpy).toHaveBeenCalledTimes(2);
+    expect(logs.some(l => /Truncated 1 oversize exchange/.test(l))).toBe(true);
   });
 });
