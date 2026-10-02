@@ -1,19 +1,22 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { initDatabase, insertExchange } from '../src/db.js';
 import {
-  MAX_INDEXED_MESSAGE_BYTES,
+  DEFAULT_MAX_MESSAGE_BYTES as CAP,
   truncationNoticeFor,
   truncateForIndex,
-} from '../src/constants.js';
+  capExchangeForIndex,
+} from '../src/message-size.js';
 import type { ConversationExchange } from '../src/types.js';
 import { EMBEDDING_DIM } from '../src/embedding-migration.js';
 
 /** vec_exchanges is declared FLOAT[EMBEDDING_DIM] and vec0 rejects zero-length vectors. */
 const EMBEDDING = new Array(EMBEDDING_DIM).fill(0.1);
+
+const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
 
 /**
  * Guard against machine-generated prompt payload being indexed as conversation.
@@ -26,8 +29,12 @@ const EMBEDDING = new Array(EMBEDDING_DIM).fill(0.1);
  *
  * The existing EXCLUSION_MARKERS defence is cooperative — it only works for
  * agents that emit a marker. This guard needs no cooperation.
+ *
+ * Fork policy: oversize messages are truncated, not skipped (upstream #139
+ * skips the whole exchange). The index call sites cap before embedding; these
+ * tests pin insertExchange's backstop, the one choke point every path shares.
  */
-describe('oversized message guard', () => {
+describe('oversized message guard (insertExchange backstop)', () => {
   let testDir: string;
   let db: Database.Database;
 
@@ -40,6 +47,7 @@ describe('oversized message guard', () => {
 
   afterEach(() => {
     delete process.env.TEST_DB_PATH;
+    delete process.env.EPISODIC_MEMORY_MAX_MESSAGE_BYTES;
     try {
       db.close();
       rmSync(testDir, { recursive: true, force: true });
@@ -60,170 +68,132 @@ describe('oversized message guard', () => {
     } as ConversationExchange;
   }
 
+  function stored(column: 'user_message' | 'assistant_message'): string {
+    const row = db.prepare(`SELECT ${column} AS v FROM exchanges WHERE id = ?`).get('x1') as { v: string };
+    return row.v;
+  }
+
   it('leaves normal messages completely untouched', () => {
     const body = 'a normal question about the codebase';
     insertExchange(db, exchange({ userMessage: body }), EMBEDDING);
-    const row = db.prepare('SELECT user_message FROM exchanges WHERE id = ?').get('x1') as {
-      user_message: string;
-    };
-    expect(row.user_message).toBe(body);
+    expect(stored('user_message')).toBe(body);
   });
 
-  it('truncates a user message far above the cap', () => {
-    const huge = 'x'.repeat(MAX_INDEXED_MESSAGE_BYTES * 3);
+  it('truncates a user message far above the cap to the cap plus a notice', () => {
+    const huge = 'x'.repeat(CAP * 3);
     insertExchange(db, exchange({ userMessage: huge }), EMBEDDING);
-    const row = db.prepare('SELECT user_message FROM exchanges WHERE id = ?').get('x1') as {
-      user_message: string;
-    };
-    expect(row.user_message.length).toBeLessThan(huge.length);
-    expect(row.user_message.length).toBeLessThanOrEqual(
-      MAX_INDEXED_MESSAGE_BYTES + truncationNoticeFor(huge.length).length
-    );
+    const value = stored('user_message');
+    expect(bytes(value)).toBeLessThanOrEqual(CAP + bytes(truncationNoticeFor(bytes(huge), CAP)));
   });
 
   it('keeps the head of the message so it stays searchable and identifiable', () => {
     const head = 'You are summarizing a Claude Code session for a daily memory log.';
-    const huge = head + 'y'.repeat(MAX_INDEXED_MESSAGE_BYTES * 2);
-    insertExchange(db, exchange({ userMessage: huge }), EMBEDDING);
-    const row = db.prepare('SELECT user_message FROM exchanges WHERE id = ?').get('x1') as {
-      user_message: string;
-    };
-    expect(row.user_message.startsWith(head)).toBe(true);
+    insertExchange(db, exchange({ userMessage: head + 'y'.repeat(CAP * 2) }), EMBEDDING);
+    expect(stored('user_message').startsWith(head)).toBe(true);
   });
 
   it('marks the row as truncated rather than silently dropping content', () => {
-    const huge = 'z'.repeat(MAX_INDEXED_MESSAGE_BYTES * 2);
-    insertExchange(db, exchange({ userMessage: huge }), EMBEDDING);
-    const row = db.prepare('SELECT user_message FROM exchanges WHERE id = ?').get('x1') as {
-      user_message: string;
-    };
-    expect(row.user_message).toContain('[truncated by episodic-memory');
+    insertExchange(db, exchange({ userMessage: 'z'.repeat(CAP * 2) }), EMBEDDING);
+    expect(stored('user_message')).toContain('[truncated by episodic-memory');
   });
 
   it('applies the same cap to assistant messages', () => {
-    const huge = 'q'.repeat(MAX_INDEXED_MESSAGE_BYTES * 2);
+    const huge = 'q'.repeat(CAP * 2);
     insertExchange(db, exchange({ assistantMessage: huge }), EMBEDDING);
-    const row = db.prepare('SELECT assistant_message FROM exchanges WHERE id = ?').get('x1') as {
-      assistant_message: string;
-    };
-    expect(row.assistant_message.length).toBeLessThan(huge.length);
+    expect(stored('assistant_message').length).toBeLessThan(huge.length);
   });
 
   it('a 3 MB payload collapses to roughly the cap, not megabytes', () => {
-    const threeMB = 'p'.repeat(3_109_374); // the real observed maximum
-    insertExchange(db, exchange({ userMessage: threeMB }), EMBEDDING);
-    const row = db.prepare('SELECT length(user_message) AS n FROM exchanges WHERE id = ?').get('x1') as {
-      n: number;
-    };
-    expect(row.n).toBeLessThan(MAX_INDEXED_MESSAGE_BYTES * 1.1);
+    insertExchange(db, exchange({ userMessage: 'p'.repeat(3_109_374) }), EMBEDDING); // the real observed maximum
+    expect(bytes(stored('user_message'))).toBeLessThan(CAP * 1.1);
   });
 
-  describe('truncateForIndex', () => {
-    it('is a no-op below the cap', () => {
-      expect(truncateForIndex('short')).toBe('short');
-    });
-
-    it('handles empty and undefined input without throwing', () => {
-      expect(truncateForIndex('')).toBe('');
-      expect(truncateForIndex(undefined as unknown as string)).toBe(undefined);
-    });
-
-    it('is idempotent — truncating twice does not stack notices', () => {
-      const huge = 'w'.repeat(MAX_INDEXED_MESSAGE_BYTES * 2);
-      const once = truncateForIndex(huge);
-      expect(truncateForIndex(once)).toBe(once);
-    });
-
-    it('still truncates an oversized message that merely quotes the marker mid-body', () => {
-      // Regression for a fail-open bug: the old check used
-      // message.includes('[truncated by episodic-memory:'), which exempted
-      // ANY message containing that substring anywhere, not just messages
-      // that are themselves already-truncated output.
-      const huge =
-        'quoting [truncated by episodic-memory: 999 chars exceeded the 999-char index cap] mid-body' +
-        'x'.repeat(MAX_INDEXED_MESSAGE_BYTES * 2);
-      const result = truncateForIndex(huge);
-      expect(result.length).toBeLessThanOrEqual(
-        MAX_INDEXED_MESSAGE_BYTES + truncationNoticeFor(huge.length).length
-      );
-      expect(result.endsWith(truncationNoticeFor(huge.length))).toBe(true);
-    });
-
-    it('still truncates when the quoted marker carries its \\n\\n prefix mid-body', () => {
-      // Discriminates the tail-anchored check from a weaker
-      // includes('\n\n[truncated by episodic-memory:') variant, which this
-      // fixture would slip past.
-      const huge =
-        'a'.repeat(Math.floor(MAX_INDEXED_MESSAGE_BYTES / 2)) +
-        '\n\n[truncated by episodic-memory: 9 chars exceeded the 9-char index cap]' +
-        'x'.repeat(MAX_INDEXED_MESSAGE_BYTES);
-      const result = truncateForIndex(huge);
-      expect(result.length).toBeLessThanOrEqual(
-        MAX_INDEXED_MESSAGE_BYTES + truncationNoticeFor(huge.length).length
-      );
-      expect(result.endsWith(truncationNoticeFor(huge.length))).toBe(true);
-    });
+  it('reads EPISODIC_MEMORY_MAX_MESSAGE_BYTES at insert time ("0" disables the cap)', () => {
+    process.env.EPISODIC_MEMORY_MAX_MESSAGE_BYTES = '0';
+    const huge = 'x'.repeat(CAP * 2);
+    insertExchange(db, exchange({ userMessage: huge }), EMBEDDING);
+    expect(stored('user_message')).toBe(huge);
   });
 });
 
-describe('MAX_INDEXED_MESSAGE_BYTES env override', () => {
-  const ENV_KEY = 'EPISODIC_MEMORY_MAX_MESSAGE_BYTES';
-  let originalValue: string | undefined;
-
-  beforeEach(() => {
-    originalValue = process.env[ENV_KEY];
+describe('truncateForIndex', () => {
+  it('is a no-op at or below the cap', () => {
+    expect(truncateForIndex('short', 100)).toBe('short');
+    const exact = 'e'.repeat(100);
+    expect(truncateForIndex(exact, 100)).toBe(exact);
   });
 
-  afterEach(() => {
-    if (originalValue === undefined) {
-      delete process.env[ENV_KEY];
-    } else {
-      process.env[ENV_KEY] = originalValue;
-    }
-    // The constant is captured at module load time, so without this, later
-    // dynamic imports (in this file or others) could pick up a module
-    // instance memoized from a test case's env override above.
-    vi.resetModules();
+  it('handles empty and undefined input without throwing', () => {
+    expect(truncateForIndex('', 100)).toBe('');
+    expect(truncateForIndex(undefined as unknown as string, 100)).toBe(undefined);
   });
 
-  /** Fresh module instance per call, so process.env is read anew each time. */
-  async function loadConstants() {
-    vi.resetModules();
-    return import('../src/constants.js');
-  }
-
-  it('defaults to 262144 when the env var is unset', async () => {
-    delete process.env[ENV_KEY];
-    const { MAX_INDEXED_MESSAGE_BYTES: value } = await loadConstants();
-    expect(value).toBe(262_144);
-  });
-
-  it('accepts a valid numeric override', async () => {
-    process.env[ENV_KEY] = '1000';
-    const { MAX_INDEXED_MESSAGE_BYTES: value } = await loadConstants();
-    expect(value).toBe(1000);
-  });
-
-  it('falls back to the default on non-numeric garbage', async () => {
-    process.env[ENV_KEY] = 'abc';
-    const { MAX_INDEXED_MESSAGE_BYTES: value } = await loadConstants();
-    expect(value).toBe(262_144);
-  });
-
-  it.each(['256K', '1e6'])(
-    'falls back to the default on a partial-numeric value (%s)',
-    async (raw) => {
-      process.env[ENV_KEY] = raw;
-      const { MAX_INDEXED_MESSAGE_BYTES: value } = await loadConstants();
-      expect(value).toBe(262_144);
-    }
-  );
-
-  it('"0" disables the guard so truncateForIndex is a no-op even for oversized input', async () => {
-    process.env[ENV_KEY] = '0';
-    const { MAX_INDEXED_MESSAGE_BYTES: value, truncateForIndex: truncate } = await loadConstants();
-    expect(value).toBe(0);
+  it('is a no-op when the cap is disabled (0)', () => {
     const huge = 'x'.repeat(500_000);
-    expect(truncate(huge)).toBe(huge);
+    expect(truncateForIndex(huge, 0)).toBe(huge);
+  });
+
+  it('measures the cap in UTF-8 bytes and never splits a code point', () => {
+    // '🚀' is 4 UTF-8 bytes; a 10-byte cap fits two whole rockets, not 2.5.
+    const result = truncateForIndex('🚀'.repeat(100), 10);
+    const head = result.slice(0, result.indexOf('\n\n[truncated'));
+    expect(head).toBe('🚀🚀');
+    expect(result).not.toContain('�');
+    expect(result.endsWith(truncationNoticeFor(400, 10))).toBe(true);
+  });
+
+  it('cuts Polish text on a character boundary', () => {
+    // 'ż' is 2 bytes; an odd cap must back off rather than emit half a character.
+    const result = truncateForIndex('ż'.repeat(50), 7);
+    expect(result.startsWith('żżż\n\n[truncated')).toBe(true);
+  });
+
+  it('is idempotent — truncating twice does not stack notices', () => {
+    const once = truncateForIndex('w'.repeat(CAP * 2), CAP);
+    expect(truncateForIndex(once, CAP)).toBe(once);
+  });
+
+  it('still truncates an oversized message that merely quotes the notice mid-body', () => {
+    // Regression for a fail-open bug: an includes() check exempted ANY message
+    // containing the notice text anywhere, not just our own truncated output.
+    const huge =
+      'quoting [truncated by episodic-memory: 999 bytes exceeded the 999-byte index cap] mid-body' +
+      'x'.repeat(CAP * 2);
+    const result = truncateForIndex(huge, CAP);
+    expect(result.endsWith(truncationNoticeFor(bytes(huge), CAP))).toBe(true);
+    expect(bytes(result)).toBeLessThanOrEqual(CAP + bytes(truncationNoticeFor(bytes(huge), CAP)));
+  });
+
+  it('still truncates when the quoted notice carries its \\n\\n prefix mid-body', () => {
+    const huge =
+      'a'.repeat(Math.floor(CAP / 2)) +
+      '\n\n[truncated by episodic-memory: 9 bytes exceeded the 9-byte index cap]' +
+      'x'.repeat(CAP);
+    const result = truncateForIndex(huge, CAP);
+    expect(result.endsWith(truncationNoticeFor(bytes(huge), CAP))).toBe(true);
+  });
+
+  it('still truncates a payload that ENDS with a well-formed notice but whose head exceeds the cap', () => {
+    const huge = 'x'.repeat(CAP * 2) + truncationNoticeFor(12345, CAP);
+    const result = truncateForIndex(huge, CAP);
+    expect(bytes(result)).toBeLessThanOrEqual(CAP + bytes(truncationNoticeFor(bytes(huge), CAP)));
+  });
+});
+
+describe('capExchangeForIndex', () => {
+  const base = { id: 'x', userMessage: 'hello', assistantMessage: 'hi' };
+
+  it('returns the same object when both messages fit', () => {
+    expect(capExchangeForIndex(base, 100)).toBe(base);
+  });
+
+  it('returns a copy with both messages truncated, leaving the input untouched', () => {
+    const input = { ...base, userMessage: 'u'.repeat(300), assistantMessage: 'a'.repeat(300) };
+    const capped = capExchangeForIndex(input, 100);
+    expect(capped).not.toBe(input);
+    expect(capped.id).toBe('x');
+    expect(capped.userMessage.startsWith('u'.repeat(100) + '\n\n[truncated')).toBe(true);
+    expect(capped.assistantMessage.startsWith('a'.repeat(100) + '\n\n[truncated')).toBe(true);
+    expect(input.userMessage.length).toBe(300);
   });
 });

@@ -8,6 +8,7 @@ import { summarizeConversation } from './summarizer.js';
 import { ConversationExchange } from './types.js';
 import { getArchiveDir, getExcludedProjects, getConversationSourceDirs, findJsonlFiles, statIfExists } from './paths.js';
 import { formatErrorSentinel, shouldQueueForSummary } from './summary-sentinel.js';
+import { capExchangeForIndex, getMaxMessageBytes, isOversizeExchange } from './message-size.js';
 
 // Set max output tokens for Claude SDK (used by summarizer)
 process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '20000';
@@ -48,6 +49,9 @@ export async function indexConversations(
 
   console.log('Loading embedding model...');
   await initEmbeddings();
+
+  const maxMessageBytes = getMaxMessageBytes();
+  let oversizeTruncated = 0;
 
   if (noSummaries) {
     console.log('⚠️  Running in no-summaries mode (skipping AI summaries)');
@@ -165,7 +169,14 @@ export async function indexConversations(
 
     // Now process embeddings and DB inserts (fast, sequential is fine)
     for (const conv of toProcess) {
-      for (const exchange of conv.exchanges) {
+      for (let exchange of conv.exchanges) {
+        // Fork: truncate oversize messages BEFORE embedding instead of skipping
+        // the exchange (#139) — skipping would also drop the assistant's reply.
+        // insertExchange re-applies the cap as a backstop. See message-size.ts.
+        if (isOversizeExchange(exchange, maxMessageBytes)) {
+          oversizeTruncated++;
+          exchange = capExchangeForIndex(exchange, maxMessageBytes);
+        }
         const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
         const embedding = await generateExchangeEmbedding(
           exchange.userMessage,
@@ -189,6 +200,10 @@ export async function indexConversations(
     }
   }
   } // end sourceDir loop
+
+  if (oversizeTruncated > 0) {
+    console.log(`  Truncated ${oversizeTruncated} oversize exchange(s) to ${maxMessageBytes} bytes per message (set EPISODIC_MEMORY_MAX_MESSAGE_BYTES to change; 0 disables) (#139)`);
+  }
 
   db.close();
   console.log(`\n✅ Indexing complete! Conversations: ${conversationsProcessed}, Exchanges: ${totalExchanges}`);
@@ -259,7 +274,16 @@ export async function indexSession(sessionId: string, concurrency: number = 1, n
         }
 
         // Index
-        for (const exchange of exchanges) {
+        const maxMessageBytes = getMaxMessageBytes();
+        let oversizeTruncated = 0;
+        for (let exchange of exchanges) {
+          // Fork: truncate oversize messages BEFORE embedding instead of skipping
+          // the exchange (#139) — skipping would also drop the assistant's reply.
+          // insertExchange re-applies the cap as a backstop. See message-size.ts.
+          if (isOversizeExchange(exchange, maxMessageBytes)) {
+            oversizeTruncated++;
+            exchange = capExchangeForIndex(exchange, maxMessageBytes);
+          }
           const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
           const embedding = await generateExchangeEmbedding(
             exchange.userMessage,
@@ -267,6 +291,10 @@ export async function indexSession(sessionId: string, concurrency: number = 1, n
             toolNames
           );
           insertExchange(db, exchange, embedding, toolNames);
+        }
+
+        if (oversizeTruncated > 0) {
+          console.log(`  Truncated ${oversizeTruncated} oversize exchange(s) to ${maxMessageBytes} bytes per message (set EPISODIC_MEMORY_MAX_MESSAGE_BYTES to change; 0 disables) (#139)`);
         }
 
         console.log(`✅ Indexed session ${sessionId}: ${exchanges.length} exchanges`);
@@ -393,8 +421,17 @@ export async function indexUnprocessed(concurrency: number = 1, noSummaries: boo
 
   // Now index embeddings
   console.log(`\nIndexing embeddings...`);
+  const maxMessageBytes = getMaxMessageBytes();
+  let oversizeTruncated = 0;
   for (const conv of unprocessed) {
-    for (const exchange of conv.exchanges) {
+    for (let exchange of conv.exchanges) {
+      // Fork: truncate oversize messages BEFORE embedding instead of skipping
+      // the exchange (#139) — skipping would also drop the assistant's reply.
+      // insertExchange re-applies the cap as a backstop. See message-size.ts.
+      if (isOversizeExchange(exchange, maxMessageBytes)) {
+        oversizeTruncated++;
+        exchange = capExchangeForIndex(exchange, maxMessageBytes);
+      }
       const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
       const embedding = await generateExchangeEmbedding(
         exchange.userMessage,
@@ -403,6 +440,10 @@ export async function indexUnprocessed(concurrency: number = 1, noSummaries: boo
       );
       insertExchange(db, exchange, embedding, toolNames);
     }
+  }
+
+  if (oversizeTruncated > 0) {
+    console.log(`  Truncated ${oversizeTruncated} oversize exchange(s) to ${maxMessageBytes} bytes per message (set EPISODIC_MEMORY_MAX_MESSAGE_BYTES to change; 0 disables) (#139)`);
   }
 
   db.close();

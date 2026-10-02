@@ -28,6 +28,19 @@ export declare function resolveIntraOpThreads(): number | null;
  * values fall back to the default.
  */
 export declare function resolveEmbedMaxChars(): number;
+/**
+ * Thrown when the embedding backend can't be loaded. The most common cause is
+ * that `@huggingface/transformers` eagerly requires `sharp`, whose native
+ * binding fails to `dlopen` libvips on some hosts (#135) — even though sharp is
+ * only needed for image inputs, not the text feature-extraction this package
+ * uses. Callers that can proceed without semantic features (e.g. background
+ * sync indexing) should catch this and degrade gracefully rather than crash.
+ */
+export declare class EmbeddingsUnavailableError extends Error {
+    constructor(message: string, options?: {
+        cause?: unknown;
+    });
+}
 export declare function initEmbeddings(): Promise<void>;
 export declare function generateEmbedding(text: string): Promise<number[]>;
 /**

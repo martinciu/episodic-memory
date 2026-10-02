@@ -94,9 +94,18 @@ describe('isResumeFailure', () => {
     expect(isResumeFailure(new SummarizerSdkError('error_during_execution', 'session-id-x'))).toBe(true);
   });
 
-  it('matches SummarizerSdkError with subtype success (the SDK reports API errors from resume replay this way — issue #16)', () => {
-    expect(isResumeFailure(new SummarizerSdkError('success'))).toBe(true);
-    expect(isResumeFailure(new SummarizerSdkError('success', 'session-id-x'))).toBe(true);
+  it('matches the fork #16 shape: subtype success + HTTP 400 (invalid thinking signature on resume replay)', () => {
+    expect(isResumeFailure(new SummarizerSdkError(
+      'success',
+      'session-id-x',
+      400,
+      'API Error: 400 messages.1.content.0: Invalid `signature` in `thinking` block'
+    ))).toBe(true);
+  });
+
+  it('does not match subtype success on non-400 API errors (429/529 are not resume-specific)', () => {
+    expect(isResumeFailure(new SummarizerSdkError('success', 'session-id-x', 429))).toBe(false);
+    expect(isResumeFailure(new SummarizerSdkError('success', 'session-id-x', 529))).toBe(false);
   });
 
   it('does not match SummarizerSdkError with other subtypes', () => {
@@ -119,10 +128,11 @@ describe('SummarizerSdkError message', () => {
     const error = new SummarizerSdkError(
       'success',
       'session-id-x',
+      400,
       'API Error: 400 messages.1.content.0: Invalid `signature` in `thinking` block'
     );
     expect(error.message).toContain('Invalid `signature` in `thinking` block');
-    expect(error.resultText).toContain('API Error: 400');
+    expect(error.detail).toContain('API Error: 400');
   });
 
   it('keeps the subtype-only message when no result text is available', () => {
@@ -165,6 +175,7 @@ describe('runCodexCommand', () => {
         if (message.method === 'thread/fork') {
           if (message.params.threadId !== 'session-123') throw new Error('wrong session id');
           if (message.params.ephemeral !== true) throw new Error('fork was not ephemeral');
+          if (message.params.excludeTurns !== true) throw new Error('fork did not set excludeTurns (required by codex-cli 0.150+ for paginated threads)');
           if (message.params.sandbox !== 'read-only') throw new Error('fork was not read-only');
           console.log(JSON.stringify({ id: message.id, result: { thread: { id: 'fork-456' } } }));
           return;

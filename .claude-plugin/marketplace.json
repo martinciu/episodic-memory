@@ -7,8 +7,8 @@
   "plugins": [
     {
       "name": "episodic-memory",
-      "description": "Semantic search for Claude Code conversations — multilingual fork (bge-m3 embeddings) with upstream fixes #108/#124/#133/#144.",
-      "version": "1.4.2-martinciu.4",
+      "description": "Semantic search for Claude Code conversations — multilingual fork (bge-m3 embeddings) tracking upstream obra/episodic-memory.",
+      "version": "1.6.0-martinciu.1",
       "source": "./",
       "author": {
         "name": "Jesse Vincent",

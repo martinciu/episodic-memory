@@ -82,11 +82,11 @@ describe('summarizeConversation — Claude resume fallback (cwd-mismatch recover
     expect(caught).toBeInstanceOf(SummarizerSdkError);
     expect((caught as SummarizerSdkError).subtype).toBe('auth_failed');
     expect((caught as SummarizerSdkError).sessionId).toBe('sdk-session-id-xyz');
-    expect((caught as SummarizerSdkError).resultText).toBe('API Error: 401 invalid x-api-key');
+    expect((caught as SummarizerSdkError).detail).toBe('API Error: 401 invalid x-api-key');
     expect((caught as SummarizerSdkError).message).toContain('API Error: 401 invalid x-api-key');
   });
 
-  it('leaves resultText undefined when the SDK result on an is_error message is not a string', async () => {
+  it('leaves detail undefined when the SDK result on an is_error message is not a string', async () => {
     vi.mocked(query).mockReturnValueOnce(asyncIterableFor([
       {
         type: 'result',
@@ -104,7 +104,7 @@ describe('summarizeConversation — Claude resume fallback (cwd-mismatch recover
       caught = error;
     }
     expect(caught).toBeInstanceOf(SummarizerSdkError);
-    expect((caught as SummarizerSdkError).resultText).toBeUndefined();
+    expect((caught as SummarizerSdkError).detail).toBeUndefined();
     expect((caught as SummarizerSdkError).message).toBe(
       'Summarizer SDK error: auth_failed (session sdk-session-id-xyz)'
     );
