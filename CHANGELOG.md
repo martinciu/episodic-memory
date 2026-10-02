@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0-martinciu.1] - 2026-10-03 (fork: martinciu/episodic-memory)
+
+The fork now sits on upstream v1.6.0. Everything in the upstream 1.5.0 and 1.6.0 entries below applies, plus three post-release upstream fixes: npm 12 install-script allowlist (#167), Codex `excludeTurns` (#166), and a timezone-proof `show` test (#169). Fork-specific differences:
+
+### Changed
+- **Oversized messages are truncated before embedding, not skipped.** Upstream 1.6.0 drops any exchange whose message exceeds 256 KB, and the assistant's reply goes with it. On a real fork install those messages were injected skill bodies and genuine pastes (one was a 1 MB bank statement with a question), each paired with a reply worth finding again. The fork keeps the first 256 KB plus a `[truncated by episodic-memory: …]` notice, so the exchange stays searchable. The cap now applies before the embedding call rather than at insert time (#13), and it counts UTF-8 bytes, so Polish text is measured honestly. `EPISODIC_MEMORY_MAX_MESSAGE_BYTES` keeps the fork's semantics: `0` disables the cap, and a value like `256K` falls back to the default instead of silently becoming a 256-byte cap.
+
+### Kept through the merge
+- **Multilingual bge-m3 embeddings.** `EMBEDDING_VERSION` is unchanged, so upgrading triggers no re-embed.
+- **Summarizer resume fallback (#16)** now runs on upstream's consolidated error handling. An HTTP 400 on resume (the "invalid thinking signature" case) still falls back to transcript summarization. Rate limits and overloads (429/529) no longer trigger a pointless second, non-resume attempt, and auth failures stop the batch immediately.
+- **Self-healing CLI dependencies (#17)** now install through upstream's tracked npm runner. A hook or MCP wrapper killed mid-install takes the npm process tree down with it instead of leaving it running orphaned.
+- **`index prune` / `index vacuum`** are serialized with background sync by upstream's lock (#156). While a sync is running, they print `sync already running` and exit without touching the database.
+
+### Upstream behavior changes worth knowing
+- Conversation timestamps in `show` and search output render in UTC (en-US format) regardless of your local timezone (#130).
+- Subagent and Workflow conversations are now searchable, ranked just below equally relevant main-thread matches. `--exclude-sidechains` restores main-thread-only search.
+- A wedged summarizer call is aborted after 120 s (`EPISODIC_MEMORY_SUMMARY_TIMEOUT_MS`). `EPISODIC_MEMORY_DISABLE_AUTO_SYNC=1` and `EPISODIC_MEMORY_SKIP_SUMMARIES=1` pause automatic indexing or just the summary pass.
+
 ## [1.6.0] - 2026-09-08
 
 Adds a fifth conversation source, an off switch for automatic syncing, and two fixes for real-world resource problems.
