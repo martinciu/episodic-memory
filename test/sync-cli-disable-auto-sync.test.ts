@@ -8,9 +8,28 @@ import { tmpdir } from 'os';
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SYNC_CLI = join(REPO_ROOT, 'dist', 'sync-cli.js');
 
+/**
+ * The background path forks a detached sync that outlives spawnSync. Removing
+ * testDir while it still runs lets it recreate dirs under the deleted path,
+ * leaking an episodic-memory-disable-auto-sync-* dir per run. Wait for it.
+ */
+async function waitForExit(pid: number, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return; // gone
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  try { process.kill(pid, 'SIGTERM'); } catch {}
+}
+
 describe('sync-cli auto-sync off switch (#163)', () => {
   let testDir: string;
   let envOverrides: Record<string, string>;
+  let backgroundPid: number | undefined;
 
   beforeEach(() => {
     testDir = mkdtempSync(join(tmpdir(), 'episodic-memory-disable-auto-sync-'));
@@ -24,7 +43,11 @@ describe('sync-cli auto-sync off switch (#163)', () => {
     };
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    if (backgroundPid !== undefined) {
+      await waitForExit(backgroundPid);
+      backgroundPid = undefined;
+    }
     try { rmSync(testDir, { recursive: true, force: true }); } catch {}
   });
 
@@ -74,6 +97,8 @@ describe('sync-cli auto-sync off switch (#163)', () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toMatch(/Sync started in background/);
+    const started = result.stdout.match(/Sync started in background \(pid (\d+)\)/);
+    expect(started).not.toBeNull();
+    backgroundPid = Number(started![1]);
   });
 });
