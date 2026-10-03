@@ -27253,7 +27253,7 @@ function formatCursorConversationAsMarkdown(lines) {
 }
 
 // src/version.ts
-var VERSION = "1.6.0-martinciu.1";
+var VERSION = "1.6.0-martinciu.2";
 
 // src/mcp-server.ts
 import fs4 from "fs";
