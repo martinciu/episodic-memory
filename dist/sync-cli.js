@@ -139,7 +139,7 @@ if (isBackground) {
         stdio: ['ignore', logFd, logFd]
     });
     child.unref(); // Allow parent to exit
-    console.log(`Sync started in background. Log: ${logPath}`);
+    console.log(`Sync started in background (pid ${child.pid}). Log: ${logPath}`);
     process.exit(0);
 }
 if (!onlyHarnesses || onlyHarnesses.includes('opencode')) {
