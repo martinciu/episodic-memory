@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0-martinciu.2] - 2026-10-03 (fork: martinciu/episodic-memory)
+
+### Changed
+- **The session-start sync tells you which process it started.** The hook line now reads `Sync started in background (pid N). Log: …`, so a long-running or stuck background sync can be found and stopped without hunting through `ps` (#29).
+
+### Fixed
+- **Running the test suite can no longer touch your real conversations.** The test setup isolated the Claude and Codex folders but not the Cursor, opencode and Oh My Pi sources added in upstream 1.5/1.6. One test's background sync read the real opencode database and exported 84 real sessions into a temp folder. It came close to summarizing them through the Claude API, on your account. Every source is now redirected to a throwaway folder, and a test enforces that (#29).
+- **`npm test` no longer leaves ~70 folders in your temp directory per run.** The per-file test setup never removed its temp folder, and one test deleted a folder that a still-running background sync then recreated. Both are now cleaned up; a full run leaves nothing behind (#29).
+
 ## [1.6.0-martinciu.1] - 2026-10-03 (fork: martinciu/episodic-memory)
 
 The fork now sits on upstream v1.6.0. Everything in the upstream 1.5.0 and 1.6.0 entries below applies, plus three post-release upstream fixes: npm 12 install-script allowlist (#167), Codex `excludeTurns` (#166), and a timezone-proof `show` test (#169). Fork-specific differences:
