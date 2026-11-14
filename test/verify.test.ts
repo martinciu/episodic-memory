@@ -6,6 +6,7 @@ import path from 'path';
 import os from 'os';
 import { initDatabase, insertExchange } from '../src/db.js';
 import { ConversationExchange } from '../src/types.js';
+import { summarizeConversation } from '../src/summarizer.js';
 
 vi.mock('../src/embeddings.js', () => ({
   initEmbeddings: vi.fn(async () => {}),
@@ -18,6 +19,14 @@ vi.mock('../src/summarizer.js', () => ({
 
 // Suppress console output for clean test runs
 const restoreConsole = suppressConsole();
+
+// A minimal transcript with one user/assistant exchange.
+function userAssistantLines(user = 'Hi', assistant = 'Hello'): string {
+  return [
+    JSON.stringify({ type: 'user', message: { role: 'user', content: user }, timestamp: '2024-01-01T00:00:00Z' }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: assistant }, timestamp: '2024-01-01T00:00:01Z' })
+  ].join('\n');
+}
 
 describe('verifyIndex', () => {
   const testDir = path.join(os.tmpdir(), 'conversation-search-test-' + Date.now());
@@ -123,6 +132,30 @@ describe('verifyIndex', () => {
     ];
     fs.writeFileSync(conversationPath, messages.join('\n'));
     fs.writeFileSync(summaryPath, 'A real summary of the conversation.', 'utf-8');
+
+    const result = await verifyIndex();
+    expect(result.missing.length).toBe(0);
+  });
+
+  it('does not report unsummarized subagent transcripts as missing (#31)', async () => {
+    const projectArchive = path.join(archiveDir, 'test-project');
+    const subagentDir = path.join(projectArchive, 'a8868824-cd73-4ec9-92e5-a3fb4e827c61', 'subagents');
+    fs.mkdirSync(subagentDir, { recursive: true });
+    fs.writeFileSync(path.join(projectArchive, 'main.jsonl'), userAssistantLines());
+    fs.writeFileSync(path.join(subagentDir, 'agent-abc123.jsonl'), userAssistantLines());
+
+    const result = await verifyIndex();
+    expect(result.missing.length).toBe(1);
+    expect(result.missing[0].path.endsWith('main.jsonl')).toBe(true);
+  });
+
+  it('does not report a subagent transcript with an error sentinel as missing', async () => {
+    const { formatErrorSentinel } = await import('../src/summary-sentinel.js');
+    const subagentDir = path.join(archiveDir, 'test-project', 'a8868824-cd73-4ec9-92e5-a3fb4e827c61', 'subagents');
+    fs.mkdirSync(subagentDir, { recursive: true });
+    const subagentPath = path.join(subagentDir, 'agent-abc123.jsonl');
+    fs.writeFileSync(subagentPath, userAssistantLines());
+    fs.writeFileSync(subagentPath.replace('.jsonl', '-summary.txt'), formatErrorSentinel(new Error('old failure')), 'utf-8');
 
     const result = await verifyIndex();
     expect(result.missing.length).toBe(0);
@@ -234,6 +267,7 @@ describe('repairIndex', () => {
     process.env.TEST_PROJECTS_DIR = projectsDir;
     process.env.TEST_ARCHIVE_DIR = archiveDir;
     process.env.TEST_DB_PATH = dbPath;
+    vi.mocked(summarizeConversation).mockClear();
   });
 
   afterEach(() => {
@@ -349,5 +383,26 @@ describe('repairIndex', () => {
     expect(verifyAfter.outdated.length).toBe(0);
 
     dbAfter.close();
+  });
+
+  it('repair never summarizes a subagent transcript', async () => {
+    const subagentDir = path.join(archiveDir, 'test-project', 'a8868824-cd73-4ec9-92e5-a3fb4e827c61', 'subagents');
+    fs.mkdirSync(subagentDir, { recursive: true });
+    const subagentPath = path.join(subagentDir, 'agent-abc123.jsonl');
+    fs.writeFileSync(subagentPath, userAssistantLines('Subagent task', 'Subagent result'));
+
+    const issues: VerificationResult = {
+      missing: [],
+      orphaned: [],
+      outdated: [{ path: subagentPath, fileTime: 1, dbTime: 0 }],
+      corrupted: []
+    };
+    await repairIndex(issues);
+
+    expect(vi.mocked(summarizeConversation)).not.toHaveBeenCalled();
+    const db = initDatabase();
+    const row = db.prepare(`SELECT COUNT(*) as count FROM exchanges WHERE archive_path = ?`).get(subagentPath) as { count: number };
+    db.close();
+    expect(row.count).toBeGreaterThan(0);
   });
 });

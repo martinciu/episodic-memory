@@ -7,7 +7,7 @@ import { initEmbeddings, generateExchangeEmbedding } from './embeddings.js';
 import { summarizeConversation } from './summarizer.js';
 import { ConversationExchange } from './types.js';
 import { getArchiveDir, getExcludedProjects, getConversationSourceDirs, findJsonlFiles, statIfExists } from './paths.js';
-import { formatErrorSentinel, shouldQueueForSummary } from './summary-sentinel.js';
+import { formatErrorSentinel, isSubagentTranscript, shouldQueueForSummary } from './summary-sentinel.js';
 import { capExchangeForIndex, getMaxMessageBytes, isOversizeExchange } from './message-size.js';
 
 // Set max output tokens for Claude SDK (used by summarizer)
@@ -143,7 +143,8 @@ export async function indexConversations(
 
     // Batch summarize conversations in parallel (unless --no-summaries)
     if (!noSummaries) {
-      const needsSummary = toProcess.filter(c => shouldQueueForSummary(c.summaryPath));
+      // Subagent and workflow transcripts are indexed but never summarized (#31).
+      const needsSummary = toProcess.filter(c => !isSubagentTranscript(c.file) && shouldQueueForSummary(c.summaryPath));
 
       if (needsSummary.length > 0) {
         console.log(`  Generating ${needsSummary.length} summaries (concurrency: ${concurrency})...`);
@@ -260,7 +261,8 @@ export async function indexSession(sessionId: string, concurrency: number = 1, n
       if (exchanges.length > 0) {
         // Generate summary (unless --no-summaries)
         const summaryPath = archivePath.replace('.jsonl', '-summary.txt');
-        if (!noSummaries && shouldQueueForSummary(summaryPath)) {
+        // Subagent and workflow transcripts are indexed but never summarized (#31).
+        if (!noSummaries && !isSubagentTranscript(file) && shouldQueueForSummary(summaryPath)) {
           fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
           try {
             const summary = await summarizeConversation(exchanges, sessionIdForSummary(exchanges));
@@ -396,7 +398,8 @@ export async function indexUnprocessed(concurrency: number = 1, noSummaries: boo
 
   // Batch process summaries (unless --no-summaries)
   if (!noSummaries) {
-    const needsSummary = unprocessed.filter(c => shouldQueueForSummary(c.summaryPath));
+    // Subagent and workflow transcripts are indexed but never summarized (#31).
+    const needsSummary = unprocessed.filter(c => !isSubagentTranscript(c.file) && shouldQueueForSummary(c.summaryPath));
     if (needsSummary.length > 0) {
       console.log(`Generating ${needsSummary.length} summaries (concurrency: ${concurrency})...\n`);
 

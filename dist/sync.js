@@ -3,7 +3,7 @@ import path from 'path';
 import { StringDecoder } from 'string_decoder';
 import { SUMMARIZER_CONTEXT_MARKER } from './constants.js';
 import { getExcludedProjects, findJsonlFiles, statIfExists } from './paths.js';
-import { formatErrorSentinel, shouldQueueForSummary } from './summary-sentinel.js';
+import { formatErrorSentinel, isSubagentTranscript, shouldQueueForSummary } from './summary-sentinel.js';
 import { capExchangeForIndex, getMaxMessageBytes, isOversizeExchange } from './message-size.js';
 const EXCLUSION_MARKERS = [
     '<INSTRUCTIONS-TO-EPISODIC-MEMORY>DO NOT INDEX THIS CHAT</INSTRUCTIONS-TO-EPISODIC-MEMORY>',
@@ -209,12 +209,15 @@ export async function syncConversations(sourceDir, destDir, options = {}) {
                 // Check if this file needs a summary (whether newly copied or existing).
                 // shouldQueueForSummary skips files that already have a real summary or
                 // an empty zero-exchange sentinel, and retries stale error sentinels (#96).
-                if (!options.skipSummaries) {
+                // Subagent and workflow transcripts are never summarized (#31). That
+                // check runs first, on the project-relative path, so they never touch
+                // the sentinel, never stream-read the file, and never take a
+                // summaryLimit slot or count toward "N more need summaries".
+                if (!options.skipSummaries && !isSubagentTranscript(file)) {
                     const summaryPath = destFile.replace('.jsonl', '-summary.txt');
                     if (shouldQueueForSummary(summaryPath) && !shouldSkipConversation(destFile)) {
-                        // sessionId enables Claude session-resume summarization; when the
-                        // filename has no UUID to extract (e.g. subagent transcripts named
-                        // agent-<hex>.jsonl), queue anyway — summarizeConversation falls
+                        // sessionId enables Claude session-resume summarization; a filename
+                        // with no UUID to extract still queues: summarizeConversation falls
                         // back to summarizing from the transcript text.
                         const sessionId = extractSessionIdFromPath(destFile) ?? undefined;
                         filesToSummarize.push({ path: destFile, sessionId });

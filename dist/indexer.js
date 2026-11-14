@@ -5,7 +5,7 @@ import { parseConversation } from './parser.js';
 import { initEmbeddings, generateExchangeEmbedding } from './embeddings.js';
 import { summarizeConversation } from './summarizer.js';
 import { getArchiveDir, getExcludedProjects, getConversationSourceDirs, findJsonlFiles, statIfExists } from './paths.js';
-import { formatErrorSentinel, shouldQueueForSummary } from './summary-sentinel.js';
+import { formatErrorSentinel, isSubagentTranscript, shouldQueueForSummary } from './summary-sentinel.js';
 import { capExchangeForIndex, getMaxMessageBytes, isOversizeExchange } from './message-size.js';
 // Set max output tokens for Claude SDK (used by summarizer)
 process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS = '20000';
@@ -100,7 +100,8 @@ export async function indexConversations(limitToProject, maxConversations, concu
             }
             // Batch summarize conversations in parallel (unless --no-summaries)
             if (!noSummaries) {
-                const needsSummary = toProcess.filter(c => shouldQueueForSummary(c.summaryPath));
+                // Subagent and workflow transcripts are indexed but never summarized (#31).
+                const needsSummary = toProcess.filter(c => !isSubagentTranscript(c.file) && shouldQueueForSummary(c.summaryPath));
                 if (needsSummary.length > 0) {
                     console.log(`  Generating ${needsSummary.length} summaries (concurrency: ${concurrency})...`);
                     await processBatch(needsSummary, async (conv) => {
@@ -201,7 +202,8 @@ export async function indexSession(sessionId, concurrency = 1, noSummaries = fal
                 if (exchanges.length > 0) {
                     // Generate summary (unless --no-summaries)
                     const summaryPath = archivePath.replace('.jsonl', '-summary.txt');
-                    if (!noSummaries && shouldQueueForSummary(summaryPath)) {
+                    // Subagent and workflow transcripts are indexed but never summarized (#31).
+                    if (!noSummaries && !isSubagentTranscript(file) && shouldQueueForSummary(summaryPath)) {
                         fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
                         try {
                             const summary = await summarizeConversation(exchanges, sessionIdForSummary(exchanges));
@@ -311,7 +313,8 @@ export async function indexUnprocessed(concurrency = 1, noSummaries = false) {
     console.log(`Found ${unprocessed.length} unprocessed conversations`);
     // Batch process summaries (unless --no-summaries)
     if (!noSummaries) {
-        const needsSummary = unprocessed.filter(c => shouldQueueForSummary(c.summaryPath));
+        // Subagent and workflow transcripts are indexed but never summarized (#31).
+        const needsSummary = unprocessed.filter(c => !isSubagentTranscript(c.file) && shouldQueueForSummary(c.summaryPath));
         if (needsSummary.length > 0) {
             console.log(`Generating ${needsSummary.length} summaries (concurrency: ${concurrency})...\n`);
             await processBatch(needsSummary, async (conv) => {

@@ -53,6 +53,28 @@ export function hasRealSummary(summaryPath) {
         return false;
     return true;
 }
+const SUBAGENT_BASENAME = /^agent-[0-9a-f-]+\.jsonl$/i;
+/**
+ * True when `projectRelativePath` (a transcript path relative to its project
+ * dir, e.g. `<uuid>/subagents/agent-<hex>.jsonl`) is a Claude subagent or
+ * workflow transcript (#31). Matches when the basename is `agent-<hex>.jsonl`
+ * (also the legacy top-level shape), or when a directory segment equals
+ * `subagents`. Pure string logic: no fs access, and it never sees anything
+ * above the project dir, so an archive root that happens to contain
+ * `subagents` can't match. Accepts both `/` and `\` separators.
+ *
+ * Policy: these transcripts are archived and indexed, and searchable via
+ * `include_sidechains`, but never summarized. Summaries are display-only, and
+ * subagent runs made up most of the summary backlog. This is a fork-only
+ * divergence from upstream.
+ */
+export function isSubagentTranscript(projectRelativePath) {
+    const segments = projectRelativePath.split(/[\\/]/);
+    const basename = segments[segments.length - 1];
+    if (SUBAGENT_BASENAME.test(basename))
+        return true;
+    return segments.slice(0, -1).includes('subagents');
+}
 /**
  * True when the conversation at `summaryPath` should be (re-)summarized:
  * no sentinel yet, or a stale error marker.

@@ -488,7 +488,9 @@ phrases. Use `vector` or `both` for descriptive queries.
 runs is recorded as *sidechain* exchanges. These are searched by default and
 ranked just below equally-relevant main-thread matches, so orchestrated sessions
 (where most substance lives in sidechains) remain findable. Pass
-`include_sidechains: false` to restore main-thread-only search.
+`include_sidechains: false` to restore main-thread-only search. Subagent and
+workflow transcripts are archived and searchable but never summarized, which
+saves summarizer calls (summaries are display-only).
 
 #### `read`
 

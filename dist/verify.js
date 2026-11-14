@@ -3,7 +3,7 @@ import path from 'path';
 import { parseConversation } from './parser.js';
 import { initDatabase, getAllExchanges, getFileLastIndexed } from './db.js';
 import { getArchiveDir, getExcludedProjects, findJsonlFiles, statIfExists } from './paths.js';
-import { isErroredSentinel } from './summary-sentinel.js';
+import { isErroredSentinel, isSubagentTranscript } from './summary-sentinel.js';
 export async function verifyIndex() {
     const result = {
         missing: [],
@@ -45,13 +45,18 @@ export async function verifyIndex() {
             // Check for missing or errored summary. An error sentinel (#96) means a
             // previous summarization failed — verify treats it as "missing" so repair
             // re-attempts it rather than reporting the conversation as healthy.
-            if (!fs.existsSync(summaryPath)) {
-                result.missing.push({ path: conversationPath, reason: 'No summary file' });
-                continue;
-            }
-            if (isErroredSentinel(fs.readFileSync(summaryPath, 'utf-8'))) {
-                result.missing.push({ path: conversationPath, reason: 'Previous summarization failed (error sentinel)' });
-                continue;
+            // Subagent and workflow transcripts are never summarized (#31), so they
+            // are never "missing" a summary; the outdated/corrupted checks below
+            // still run for them.
+            if (!isSubagentTranscript(file)) {
+                if (!fs.existsSync(summaryPath)) {
+                    result.missing.push({ path: conversationPath, reason: 'No summary file' });
+                    continue;
+                }
+                if (isErroredSentinel(fs.readFileSync(summaryPath, 'utf-8'))) {
+                    result.missing.push({ path: conversationPath, reason: 'Previous summarization failed (error sentinel)' });
+                    continue;
+                }
             }
             // Check if file is outdated (modified after last_indexed)
             const lastIndexed = getFileLastIndexed(db, conversationPath);
@@ -123,11 +128,15 @@ export async function repairIndex(issues) {
                 console.log(`  Skipped (no exchanges)`);
                 continue;
             }
-            // Generate/update summary
-            const summaryPath = conversationPath.replace('.jsonl', '-summary.txt');
-            const summary = await summarizeConversation(exchanges);
-            fs.writeFileSync(summaryPath, summary, 'utf-8');
-            console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
+            // Generate/update summary. Subagent and workflow transcripts are never
+            // summarized (#31), even if one reaches here via `outdated`.
+            const projectRelative = path.relative(path.join(archiveDir, project), conversationPath);
+            if (!isSubagentTranscript(projectRelative)) {
+                const summaryPath = conversationPath.replace('.jsonl', '-summary.txt');
+                const summary = await summarizeConversation(exchanges);
+                fs.writeFileSync(summaryPath, summary, 'utf-8');
+                console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
+            }
             // Index exchanges
             for (const exchange of exchanges) {
                 const toolNames = exchange.toolCalls?.map(tc => tc.toolName);
