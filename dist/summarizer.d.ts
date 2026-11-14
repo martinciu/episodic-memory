@@ -138,7 +138,10 @@ export declare function formatConversationText(exchanges: ConversationExchange[]
  * persistSession: false keeps the SDK from writing its session transcript to
  * ~/.claude/projects/ (#83). Without it, every summarization spawns a fake
  * session JSONL that pollutes the IDE session sidebar. The option is honored
- * by claude-agent-sdk >= 0.2.0.
+ * by claude-agent-sdk >= 0.2.0. It keeps the transcript out, but not the
+ * session title: the CLI still writes an `ai-title`-only JSONL for every
+ * non-resume call. That is why getApiEnv() sets
+ * CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 in `env` (#31).
  *
  * tools: [] disables every built-in tool so a resumed mid-task session can't
  * keep EXECUTING the task instead of writing a <summary>.

@@ -135,9 +135,23 @@ export function getApiEnv() {
     // to the SDK subprocess unchanged, which is how summarization gets routed
     // through AWS Bedrock (#44). No per-var handling needed here — the spread
     // already covers it.
+    //
+    // CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 stops the summarizer subprocess
+    // from writing a session-title stub (#31, upstream obra/episodic-memory#183).
+    // The CLI skips title generation when this is set, or when it resumes a
+    // session that already has messages. Otherwise every non-resume call writes
+    // a one-line `ai-title` JSONL under ~/.claude/projects/ that `/resume` lists
+    // as a session. `persistSession: false` does not cover that write. Setting
+    // it here covers every Claude spawn the summarizer makes: the direct call,
+    // the resume fallback, and the hierarchical chunk and synthesis calls. It is
+    // scoped to this subprocess on purpose. Never set it globally, because the
+    // user's own sessions must keep their titles. Codex spawns also read this
+    // env and ignore the var. It sits after the `...process.env` spread so it
+    // wins over any inherited value.
     return {
         ...process.env,
         EPISODIC_MEMORY_SUMMARIZER_GUARD: '1',
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
         ...(baseUrl && { ANTHROPIC_BASE_URL: baseUrl }),
         ...(token && { ANTHROPIC_AUTH_TOKEN: token }),
         ...(timeoutMs && { API_TIMEOUT_MS: timeoutMs }),
@@ -300,7 +314,10 @@ function extractSummary(text) {
  * persistSession: false keeps the SDK from writing its session transcript to
  * ~/.claude/projects/ (#83). Without it, every summarization spawns a fake
  * session JSONL that pollutes the IDE session sidebar. The option is honored
- * by claude-agent-sdk >= 0.2.0.
+ * by claude-agent-sdk >= 0.2.0. It keeps the transcript out, but not the
+ * session title: the CLI still writes an `ai-title`-only JSONL for every
+ * non-resume call. That is why getApiEnv() sets
+ * CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 in `env` (#31).
  *
  * tools: [] disables every built-in tool so a resumed mid-task session can't
  * keep EXECUTING the task instead of writing a <summary>.

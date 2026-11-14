@@ -38,6 +38,7 @@
     "pretest": "npm run generate-version",
     "test": "vitest run",
     "test:claude-e2e": "node scripts/claude-e2e.js",
+    "test:summarizer-title-e2e": "node scripts/summarizer-title-e2e.js",
     "test:codex-e2e": "node scripts/codex-e2e.js",
     "test:watch": "vitest"
   },

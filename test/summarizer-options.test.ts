@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -312,6 +312,36 @@ describe('getApiEnv', () => {
     const env = getApiEnv()!;
     expect(env.ANTHROPIC_AUTH_TOKEN).toBe('tok-test');
     expect(env.API_TIMEOUT_MS).toBe('12345');
+  });
+});
+
+describe('getApiEnv — title-stub guard (#31)', () => {
+  let saved: string | undefined;
+
+  beforeEach(() => {
+    saved = process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+  });
+
+  afterEach(() => {
+    if (saved === undefined) delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+    else process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = saved;
+  });
+
+  it('sets CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 so the summarizer subprocess writes no session-title stub (#31)', () => {
+    expect(getApiEnv()!.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+    expect(getApiEnv()!.EPISODIC_MEMORY_SUMMARIZER_GUARD).toBe('1');
+  });
+
+  it('overrides an inherited empty CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', () => {
+    process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '';
+    expect(getApiEnv()!.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+  });
+
+  it('carries the title-stub guard into query options on fresh and resumed sessions', () => {
+    for (const opts of [buildSummarizerQueryOptions({ model: 'haiku' }),
+                        buildSummarizerQueryOptions({ model: 'haiku', sessionId: 'abc-123' })]) {
+      expect((opts.env as Record<string, string>).CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+    }
   });
 });
 
