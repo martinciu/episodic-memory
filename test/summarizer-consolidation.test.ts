@@ -340,3 +340,56 @@ describe('3d/#104 — metered API cost guard', () => {
     expect(out).toBe('subscription');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #20 — an API error can never become a summary; failures always throw
+// ─────────────────────────────────────────────────────────────────────────────
+describe('#20 — API errors never become summaries', () => {
+  beforeEach(() => vi.mocked(query).mockReset());
+
+  // 16 exchanges (>15) takes the hierarchical path: 2 chunks of 8.
+  const ex16 = () => Array.from({ length: 16 }, (_, i) => makeExchange({ id: 'ex-' + i, sessionId: undefined }));
+  const resultMsg = (fields: Record<string, unknown>) => asyncIterableFor([{ type: 'result', ...fields }]);
+
+  it('runSummarizerQuery throws on a non-error result whose text is an API error (#20)', async () => {
+    const queryFn: SummarizerQueryFn = () =>
+      resultMsg({ is_error: false, subtype: 'success', result: 'API Error: 500 {"type":"error"}' }) as any;
+    let caught: unknown;
+    try { await runSummarizerQuery(queryFn, 'prompt', {}, 5000); } catch (e) { caught = e; }
+    expect(caught).toBeInstanceOf(SummarizerSdkError);
+    const err = caught as SummarizerSdkError;
+    expect(err.subtype).toBe('api_error_text');
+    expect(err.detail?.startsWith('API Error: 500')).toBe(true);
+    expect(isResumeFailure(err)).toBe(false);
+  });
+
+  it('runSummarizerQuery passes through summaries that mention API errors', async () => {
+    for (const text of ['<summary>Fixed an API Error 400 in the client</summary>', 'API Error handling was added to the retry loop.']) {
+      const queryFn: SummarizerQueryFn = () => resultMsg({ is_error: false, subtype: 'success', result: text }) as any;
+      await expect(runSummarizerQuery(queryFn, 'prompt', {}, 5000)).resolves.toBe(text);
+    }
+  });
+
+  it('hierarchical summary throws when every chunk fails instead of returning an error string', async () => {
+    vi.mocked(query).mockImplementation(() =>
+      resultMsg({ is_error: true, subtype: 'success', api_error_status: 500, result: 'API Error: 500 overloaded' }) as any);
+    await expect(summarizeConversation(ex16())).rejects.toThrow('all 2 chunks failed');
+  });
+
+  it('hierarchical summary stops at a chunk auth failure', async () => {
+    vi.mocked(query).mockImplementation(() =>
+      resultMsg({ is_error: true, subtype: 'success', api_error_status: 401, result: 'Failed to authenticate. API Error: 401 invalid token' }) as any);
+    let caught: unknown;
+    try { await summarizeConversation(ex16()); } catch (e) { caught = e; }
+    expect(isAuthFailure(caught)).toBe(true);
+    expect(vi.mocked(query)).toHaveBeenCalledTimes(1);
+  });
+
+  it('hierarchical summary still succeeds when only some chunks fail', async () => {
+    vi.mocked(query)
+      .mockReturnValueOnce(resultMsg({ is_error: true, subtype: 'success', api_error_status: 500, result: 'API Error: 500 overloaded' }) as any)
+      .mockReturnValueOnce(resultMsg({ is_error: false, subtype: 'success', result: '<summary>Second half.</summary>' }) as any)
+      .mockReturnValueOnce(resultMsg({ is_error: false, subtype: 'success', result: '<summary>Synth.</summary>' }) as any);
+    await expect(summarizeConversation(ex16())).resolves.toBe('Synth.');
+  });
+});

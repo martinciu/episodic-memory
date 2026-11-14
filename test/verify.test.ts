@@ -405,4 +405,52 @@ describe('repairIndex', () => {
     db.close();
     expect(row.count).toBeGreaterThan(0);
   });
+
+  it('repair writes an error sentinel for a missing summary that fails, and still indexes (#20)', async () => {
+    const projectArchive = path.join(archiveDir, 'test-project');
+    fs.mkdirSync(projectArchive, { recursive: true });
+    const conversationPath = path.join(projectArchive, 'fails.jsonl');
+    const summaryPath = conversationPath.replace('.jsonl', '-summary.txt');
+    fs.writeFileSync(conversationPath, userAssistantLines('Will fail', 'Indeed'));
+    vi.mocked(summarizeConversation).mockRejectedValueOnce(new Error('boom'));
+
+    await repairIndex({
+      missing: [{ path: conversationPath, reason: 'No summary file' }],
+      orphaned: [],
+      outdated: [],
+      corrupted: []
+    });
+
+    const content = fs.readFileSync(summaryPath, 'utf-8');
+    expect(content.startsWith('__ERRORED__\n')).toBe(true);
+    expect(content).toContain('boom');
+    const db = initDatabase();
+    const row = db.prepare(`SELECT COUNT(*) as count FROM exchanges WHERE archive_path = ?`).get(conversationPath) as { count: number };
+    db.close();
+    expect(row.count).toBeGreaterThanOrEqual(1);
+  });
+
+  it('repair keeps the old summary of an outdated conversation when re-summarizing fails', async () => {
+    const projectArchive = path.join(archiveDir, 'test-project');
+    fs.mkdirSync(projectArchive, { recursive: true });
+    const conversationPath = path.join(projectArchive, 'old.jsonl');
+    const summaryPath = conversationPath.replace('.jsonl', '-summary.txt');
+    fs.writeFileSync(conversationPath, userAssistantLines('Old question', 'Old answer'));
+    fs.writeFileSync(summaryPath, 'Old summary', 'utf-8');
+    vi.mocked(summarizeConversation).mockRejectedValueOnce(new Error('boom'));
+
+    await repairIndex({
+      missing: [],
+      orphaned: [],
+      outdated: [{ path: conversationPath, fileTime: 2, dbTime: 1 }],
+      corrupted: []
+    });
+
+    expect(fs.readFileSync(summaryPath, 'utf-8')).toBe('Old summary');
+    // A summary failure must not stop indexing.
+    const db = initDatabase();
+    const row = db.prepare(`SELECT COUNT(*) as count FROM exchanges WHERE archive_path = ?`).get(conversationPath) as { count: number };
+    db.close();
+    expect(row.count).toBeGreaterThanOrEqual(1);
+  });
 });

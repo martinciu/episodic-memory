@@ -227,9 +227,6 @@ To route summarization through a custom Anthropic-compatible endpoint or overrid
 # Override model (default: haiku)
 export EPISODIC_MEMORY_API_MODEL=opus
 
-# Override fallback model on error (default: sonnet)
-export EPISODIC_MEMORY_API_MODEL_FALLBACK=sonnet
-
 # Route through custom endpoint
 export EPISODIC_MEMORY_API_BASE_URL=https://your-endpoint.com/api/anthropic
 export EPISODIC_MEMORY_API_TOKEN=your-token

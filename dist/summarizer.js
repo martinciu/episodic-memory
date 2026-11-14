@@ -115,7 +115,6 @@ export function isAuthFailure(error) {
  *
  * Env vars (all optional):
  * - EPISODIC_MEMORY_API_MODEL: Model to use (default: haiku)
- * - EPISODIC_MEMORY_API_MODEL_FALLBACK: Fallback model on error (default: sonnet)
  * - EPISODIC_MEMORY_API_BASE_URL: Custom API endpoint
  * - EPISODIC_MEMORY_API_TOKEN: Auth token for custom endpoint
  * - EPISODIC_MEMORY_API_TIMEOUT_MS: Timeout for API calls (default: SDK default)
@@ -274,6 +273,14 @@ export async function runSummarizerQuery(queryFn, prompt, options, timeoutMs) {
                 if (message.is_error) {
                     throw new SummarizerSdkError(message.subtype || 'unknown', message.session_id, message.api_error_status, typeof result === 'string' ? result : undefined);
                 }
+                // An API error can also arrive as plain result text with is_error unset
+                // (#20). It must never become a summary: throw so callers write the
+                // __ERRORED__ sentinel and retry later. Prefix match with the colon
+                // (the CLI's error format) so a real summary that merely mentions
+                // "API Error 400", or starts with "API Error handling…", passes through.
+                if (typeof result === 'string' && /^API Error:/.test(result.trim())) {
+                    throw new SummarizerSdkError('api_error_text', message.session_id, null, result);
+                }
                 return typeof result === 'string' ? result : '';
             }
         }
@@ -387,22 +394,10 @@ export function buildCodexSummarizerCommand(args) {
         model: args.model,
     };
 }
-async function callClaude(prompt, sessionId, useFallback = false, cwd) {
-    const primaryModel = process.env.EPISODIC_MEMORY_API_MODEL || 'haiku';
-    const fallbackModel = process.env.EPISODIC_MEMORY_API_MODEL_FALLBACK || 'sonnet';
-    const model = useFallback ? fallbackModel : primaryModel;
+async function callClaude(prompt, sessionId, cwd) {
+    const model = process.env.EPISODIC_MEMORY_API_MODEL || 'haiku';
     const options = buildSummarizerQueryOptions({ model, sessionId, cwd });
-    const result = await runSummarizerQuery(query, prompt, options, summaryTimeoutMs());
-    // Check if result is an API error the SDK returns as a result string (not is_error).
-    if (typeof result === 'string' && result.includes('API Error') && result.includes('thinking.budget_tokens')) {
-        if (!useFallback) {
-            console.log(`    ${primaryModel} hit thinking budget error, retrying with ${fallbackModel}`);
-            return await callClaude(prompt, sessionId, true, cwd);
-        }
-        // If fallback also fails, return error message
-        return result;
-    }
-    return result;
+    return runSummarizerQuery(query, prompt, options, summaryTimeoutMs());
 }
 function appServerTimeoutMs() {
     const configured = Number(process.env.EPISODIC_MEMORY_CODEX_SUMMARY_TIMEOUT_MS);
@@ -698,7 +693,7 @@ Bad:
 
 ${conversationText}`;
         try {
-            const result = await callClaude(prompt, claudeSessionId, false, cwd);
+            const result = await callClaude(prompt, claudeSessionId, cwd);
             return extractSummary(result);
         }
         catch (error) {
@@ -730,6 +725,7 @@ ${conversationText}`;
     console.log(`  Split into ${chunks.length} chunks`);
     // Summarize each chunk
     const chunkSummaries = [];
+    let lastChunkError;
     for (let i = 0; i < chunks.length; i++) {
         const chunkText = formatConversationText(chunks[i]);
         const prompt = `${SUMMARIZER_CONTEXT_MARKER}.
@@ -746,11 +742,20 @@ Example: <summary>Implemented HID keyboard functionality for ESP32. Hit Bluetoot
             console.log(`  Chunk ${i + 1}/${chunks.length}: ${extracted.split(/\s+/).length} words`);
         }
         catch (error) {
+            // Auth is global, not per-chunk: stop here so sync's isAuthFailure
+            // batch stop fires for long conversations too (#138, #20).
+            if (isAuthFailure(error))
+                throw error;
+            lastChunkError = error;
             console.log(`  Chunk ${i + 1} failed, skipping`);
         }
     }
+    // Every chunk failed: throw, never return an error string as the summary
+    // (#20). Callers write the __ERRORED__ sentinel and retry after the
+    // threshold (#96).
     if (chunkSummaries.length === 0) {
-        return 'Error: Unable to summarize conversation.';
+        const lastMessage = lastChunkError instanceof Error ? lastChunkError.message : String(lastChunkError);
+        throw new Error(`Unable to summarize conversation: all ${chunks.length} chunks failed (last error: ${lastMessage})`);
     }
     // Synthesize chunks into final summary
     const synthesisPrompt = `${SUMMARIZER_CONTEXT_MARKER}.
