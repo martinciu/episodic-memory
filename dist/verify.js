@@ -115,6 +115,8 @@ export async function repairIndex(issues) {
         ...issues.missing.map(m => m.path),
         ...issues.outdated.map(o => o.path)
     ];
+    let summaryFailures = 0;
+    let keptPreviousSummary = 0;
     for (const conversationPath of toReindex) {
         console.log(`Re-indexing: ${conversationPath}`);
         try {
@@ -143,7 +145,11 @@ export async function repairIndex(issues) {
                     console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
                 }
                 catch (error) {
-                    if (!hasRealSummary(summaryPath)) {
+                    summaryFailures++;
+                    if (hasRealSummary(summaryPath)) {
+                        keptPreviousSummary++;
+                    }
+                    else {
                         try {
                             fs.writeFileSync(summaryPath, formatErrorSentinel(error), 'utf-8');
                         }
@@ -170,5 +176,17 @@ export async function repairIndex(issues) {
         console.log('\n⚠️  Corrupted files (manual review needed):');
         issues.corrupted.forEach(c => console.log(`  ${c.path}: ${c.error}`));
     }
-    console.log('✅ Repair complete.');
+    if (summaryFailures > 0) {
+        // Indexing stamps last_indexed, so a failed refresh that kept the previous
+        // summary is no longer visible to verifyIndex as outdated and is not
+        // retried automatically; surface it here instead of claiming success. The
+        // rest got an error sentinel, which the next verify --fix or sync retries.
+        const noun = summaryFailures === 1 ? 'summary' : 'summaries';
+        const retried = summaryFailures - keptPreviousSummary;
+        console.log(`⚠️  ${summaryFailures} ${noun} failed: ${retried} marked for retry by the next verify --fix or sync; ` +
+            `${keptPreviousSummary} kept the previous summary and won't be retried automatically.`);
+    }
+    else {
+        console.log('✅ Repair complete.');
+    }
 }
