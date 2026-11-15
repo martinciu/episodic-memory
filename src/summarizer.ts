@@ -32,6 +32,10 @@ export function truncateSdkErrorDetail(detail: string, max = SDK_ERROR_DETAIL_MA
  * hit an API error (carried in `result` / `api_error_status`): e.g. a CLI OAuth
  * 401 (#138), a replayed-thinking-block 400 (#110), or "No conversation found"
  * on an archive-only resume (#122).
+ *
+ * Also thrown with the synthetic subtype `'api_error_text'` (`apiErrorStatus`
+ * null, so `isResumeFailure` never matches it) when a non-error result's text
+ * starts with `API Error:` (#20).
  */
 export class SummarizerSdkError extends Error {
   public readonly detail?: string;
@@ -156,12 +160,16 @@ export function getApiEnv(): Record<string, string | undefined> | undefined {
   //
   // CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 stops the summarizer subprocess
   // from writing a session-title stub (#31, upstream obra/episodic-memory#183).
-  // The CLI skips title generation when this is set, or when it resumes a
-  // session that already has messages. Otherwise every non-resume call writes
-  // a one-line `ai-title` JSONL under ~/.claude/projects/ that `/resume` lists
-  // as a session. `persistSession: false` does not cover that write. Setting
-  // it here covers every Claude spawn the summarizer makes: the direct call,
-  // the resume fallback, and the hierarchical chunk and synthesis calls. It is
+  // As of claude-agent-sdk 0.2.141, the CLI skips title generation when this is
+  // set, or when it resumes a session that already has messages. Otherwise every
+  // non-resume call writes a one-line `ai-title` JSONL under ~/.claude/projects/
+  // that `/resume` lists as a session. `persistSession: false` does not cover
+  // that write. The variable also turns off the CLI's other nonessential
+  // traffic (telemetry, error reporting, update checks), which a one-shot
+  // summarizer doesn't need. `npm run test:summarizer-title-e2e` re-checks this
+  // against the live CLI. Setting it here covers every Claude spawn the
+  // summarizer makes: the direct call, the non-resume retry after a failed
+  // resume, and the hierarchical chunk and synthesis calls. It is
   // scoped to this subprocess on purpose. Never set it globally, because the
   // user's own sessions must keep their titles. Codex spawns also read this
   // env and ignore the var. It sits after the `...process.env` spread so it
@@ -262,7 +270,9 @@ export type SummarizerQueryFn = (args: { prompt: string; options: Record<string,
 /**
  * Run one summarizer query() under a wall-clock timeout, returning the SDK's
  * `result` string. Throws SummarizerSdkError on an is_error result (carrying
- * api_error_status + truncated result text) and SummarizerTimeoutError if the
+ * api_error_status + truncated result text), also with the synthetic subtype
+ * 'api_error_text' (apiErrorStatus null, never matched by isResumeFailure) when
+ * a non-error result's text starts with 'API Error:', and SummarizerTimeoutError if the
  * generator does not produce a result within timeoutMs — aborting the query via
  * AbortController and closing the generator so the wedged subprocess is torn down
  * (#160). Buffers the subprocess stderr and appends it to process-exit errors so
@@ -313,11 +323,15 @@ export async function runSummarizerQuery(
             typeof result === 'string' ? result : undefined,
           );
         }
-        // An API error can also arrive as plain result text with is_error unset
-        // (#20). It must never become a summary: throw so callers write the
-        // __ERRORED__ sentinel and retry later. Prefix match with the colon
-        // (the CLI's error format) so a real summary that merely mentions
-        // "API Error 400", or starts with "API Error handling…", passes through.
+        // Defensive (#20): older CLI builds returned some API errors as plain
+        // result text with is_error unset. On claude-agent-sdk 0.2.141 the CLI
+        // sets is_error, so the branch above normally fires first. If one does
+        // slip through it must never become a summary: throw, so the direct path
+        // writes the __ERRORED__ sentinel and retries later (a chunk error is
+        // skipped; a synthesis error falls back to the chunk summaries). Anchored
+        // prefix match with the colon (the CLI's error format) so a real summary
+        // that merely mentions "API Error 400", or starts with "API Error
+        // handling…", passes through.
         if (typeof result === 'string' && /^API Error:/.test(result.trim())) {
           throw new SummarizerSdkError('api_error_text', message.session_id, null, result);
         }
@@ -840,7 +854,7 @@ Example: <summary>Implemented HID keyboard functionality for ESP32. Hit Bluetoot
       // batch stop fires for long conversations too (#138, #20).
       if (isAuthFailure(error)) throw error;
       lastChunkError = error;
-      console.log(`  Chunk ${i + 1} failed, skipping`);
+      console.log(`  Chunk ${i + 1} failed, skipping: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -849,7 +863,7 @@ Example: <summary>Implemented HID keyboard functionality for ESP32. Hit Bluetoot
   // threshold (#96).
   if (chunkSummaries.length === 0) {
     const lastMessage = lastChunkError instanceof Error ? lastChunkError.message : String(lastChunkError);
-    throw new Error(`Unable to summarize conversation: all ${chunks.length} chunks failed (last error: ${lastMessage})`);
+    throw new Error(`Unable to summarize conversation: all chunks failed (last error: ${lastMessage})`, { cause: lastChunkError });
   }
 
   // Synthesize chunks into final summary
@@ -873,7 +887,9 @@ Your summary (max 200 words):`;
     const result = await callClaude(synthesisPrompt); // No sessionId for synthesis
     return extractSummary(result);
   } catch (error) {
-    console.log(`  Synthesis failed, using chunk summaries`);
+    // Auth is global: surface it so sync's batch stop fires (#138, #20).
+    if (isAuthFailure(error)) throw error;
+    console.log(`  Synthesis failed, using chunk summaries: ${error instanceof Error ? error.message : String(error)}`);
     return chunkSummaries.join(' ');
   }
 }

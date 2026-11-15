@@ -12,6 +12,10 @@ export declare function truncateSdkErrorDetail(detail: string, max?: number): st
  * hit an API error (carried in `result` / `api_error_status`): e.g. a CLI OAuth
  * 401 (#138), a replayed-thinking-block 400 (#110), or "No conversation found"
  * on an archive-only resume (#122).
+ *
+ * Also thrown with the synthetic subtype `'api_error_text'` (`apiErrorStatus`
+ * null, so `isResumeFailure` never matches it) when a non-error result's text
+ * starts with `API Error:` (#20).
  */
 export declare class SummarizerSdkError extends Error {
     readonly subtype: string;
@@ -122,7 +126,9 @@ export type SummarizerQueryFn = (args: {
 /**
  * Run one summarizer query() under a wall-clock timeout, returning the SDK's
  * `result` string. Throws SummarizerSdkError on an is_error result (carrying
- * api_error_status + truncated result text) and SummarizerTimeoutError if the
+ * api_error_status + truncated result text), also with the synthetic subtype
+ * 'api_error_text' (apiErrorStatus null, never matched by isResumeFailure) when
+ * a non-error result's text starts with 'API Error:', and SummarizerTimeoutError if the
  * generator does not produce a result within timeoutMs — aborting the query via
  * AbortController and closing the generator so the wedged subprocess is torn down
  * (#160). Buffers the subprocess stderr and appends it to process-exit errors so
