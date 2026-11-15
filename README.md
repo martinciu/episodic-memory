@@ -370,6 +370,15 @@ EPISODIC_MEMORY_RUN_CLAUDE_E2E=1 npm run test:claude-e2e
 
 This test uses your normal Claude Code auth and writes small test transcripts to your normal Claude transcript directory. The archive and index are isolated in a temporary `EPISODIC_MEMORY_CONFIG_DIR`.
 
+### Summarizer Title-Stub E2E Verification
+
+The opt-in `test:summarizer-title-e2e` check runs two real summarizer queries in fresh workspaces and verifies that a summarizer query leaves no `ai-title`-only session file under `~/.claude/projects`. A control run with the title guards removed must produce one, so the check cannot pass vacuously. It costs two Haiku calls (or `EPISODIC_MEMORY_API_MODEL`).
+
+```bash
+npm run build
+EPISODIC_MEMORY_RUN_CLAUDE_E2E=1 npm run test:summarizer-title-e2e
+```
+
 ### `episodic-memory index`
 
 Manual indexing tools for bulk operations and maintenance. See `episodic-memory index --help` for full options.

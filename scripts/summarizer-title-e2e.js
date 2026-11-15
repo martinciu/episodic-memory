@@ -4,13 +4,17 @@
 //
 // Two real (non-resume) summarizer queries, each in its own fresh mkdtemp
 // workspace so any stub lands in a project dir that only this script created:
-//   - control: the product's query options with the title guard
-//     (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) removed. It must produce a
-//     title-only stub; if it doesn't, this check cannot see stubs and fails.
-//   - fixed: the product's own buildSummarizerQueryOptions()/getApiEnv(). It
-//     must produce no *.jsonl at all and return a non-empty summary.
+//   - control: the product's query options with both CLI title gates removed:
+//     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC (set by getApiEnv()) and
+//     CLAUDE_CODE_DISABLE_TERMINAL_TITLE (in case the shell sets it). It must
+//     produce a title-only stub; if it doesn't, this check cannot see stubs and fails.
+//   - fixed: the product's buildSummarizerQueryOptions()/getApiEnv() options,
+//     with cwd pointed at the workspace. It must produce no *.jsonl at all and
+//     return a non-empty summary.
 //
-// Uses real Claude Code auth (two Haiku calls). Run it with:
+// Cost: two summarizer queries (Haiku unless EPISODIC_MEMORY_API_MODEL is set).
+// The control also triggers the CLI's own title call. Uses real Claude Code auth.
+// Run: npm run build, then
 //   EPISODIC_MEMORY_RUN_CLAUDE_E2E=1 npm run test:summarizer-title-e2e
 import fs from 'fs';
 import os from 'os';
@@ -126,6 +130,7 @@ async function runCase({ label, stripTitleGuard, projectsRoot, prompt, deps }) {
     if (stripTitleGuard) {
       const env = { ...options.env };
       delete env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+      // The CLI's second title gate, removed in case the shell sets it.
       delete env.CLAUDE_CODE_DISABLE_TERMINAL_TITLE;
       options.env = env;
     }
@@ -200,7 +205,7 @@ async function main() {
   const { SUMMARIZER_CONTEXT_MARKER } = await import('../dist/constants.js');
   const { parseConversation } = await import('../dist/parser.js');
 
-  const projectsRoot = path.join(process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), '.claude'), 'projects');
+  const projectsRoot = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'), 'projects');
   const prompt = await buildPrompt(SUMMARIZER_CONTEXT_MARKER, parseConversation, formatConversationText);
   const deps = { query, buildSummarizerQueryOptions, runSummarizerQuery, summaryTimeoutMs };
 
