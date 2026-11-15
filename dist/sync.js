@@ -53,11 +53,12 @@ export function shouldSkipConversation(filePath) {
 }
 /**
  * True when a transcript contains at least one message line in any supported
- * harness format. Summarizer-spawned Agent SDK sessions materialize as
- * message-less stub files (a single {"type":"ai-title"} line) that defeat the
- * marker-based exclusion above and would otherwise re-enter the sync queue on
- * every run — one new stub per summary generated. A transcript that has no
- * messages *yet* (a session that just started) is skipped this run and picked
+ * harness format. Summarizer subprocesses used to materialize message-less
+ * stub files (a single {"type":"ai-title"} line), one per call, until
+ * getApiEnv() set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC (fork #31). Such
+ * stubs defeat the marker-based exclusion above and would re-enter the sync
+ * queue on every run; stubs written by older versions can still be on disk.
+ * A transcript that has no messages *yet* (a session that just started) is skipped this run and picked
  * up on a later sync once it has content, since its mtime keeps advancing.
  */
 function hasConversationContent(filePath) {

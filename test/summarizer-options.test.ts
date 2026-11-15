@@ -320,6 +320,7 @@ describe('getApiEnv — title-stub guard (#31)', () => {
 
   beforeEach(() => {
     saved = process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
+    delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
   });
 
   afterEach(() => {
@@ -332,8 +333,8 @@ describe('getApiEnv — title-stub guard (#31)', () => {
     expect(getApiEnv()!.EPISODIC_MEMORY_SUMMARIZER_GUARD).toBe('1');
   });
 
-  it('overrides an inherited empty CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC', () => {
-    process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '';
+  it.each(['', '0'])('overrides an inherited CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=%j', (inherited) => {
+    process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = inherited;
     expect(getApiEnv()!.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
   });
 

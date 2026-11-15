@@ -19,6 +19,9 @@ describe('isSubagentTranscript (#31)', () => {
     'my-subagents/x.jsonl',        // segment must equal 'subagents' exactly
     'test.jsonl',
     'notes-export.jsonl',
+    'agent-notes.jsonl',           // 'agent-' prefix but not hex
+    'my-agent-abc123.jsonl',       // basename must start with 'agent-'
+    'subagent-abc123.jsonl',       // 'agent-' only as a suffix of 'subagent-'
   ];
 
   it.each(yes)('treats %s as a subagent transcript', (p) => {

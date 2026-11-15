@@ -39,6 +39,8 @@ delete process.env.EPISODIC_MEMORY_ALLOW_METERED_API;
 delete process.env.EPISODIC_MEMORY_API_BASE_URL;
 delete process.env.EPISODIC_MEMORY_API_TOKEN;
 delete process.env.EPISODIC_MEMORY_SUMMARY_TIMEOUT_MS;
+delete process.env.EPISODIC_MEMORY_SUMMARY_ERROR_RETRY_HOURS;
+delete process.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC;
 
 // setupFiles run once per test file, so without this every `npm test` leaves
 // one episodic-memory-vitest-* dir per file behind in the OS tmpdir.

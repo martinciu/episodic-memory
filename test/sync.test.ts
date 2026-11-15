@@ -190,6 +190,17 @@ describe('sync command', () => {
     expect(existsSync(join(destDir, 'project-a', 'agent-afa95f98d145b3d2e-summary.txt'))).toBe(false);
   });
 
+  it('does not queue workflow transcripts under subagents/workflows (segment rule alone)', async () => {
+    const rel = join('project-a', 'a8868824-cd73-4ec9-92e5-a3fb4e827c61', 'subagents', 'workflows', 'wf_3b2e44d7-e36');
+    mkdirSync(join(sourceDir, rel), { recursive: true });
+    writeFileSync(join(sourceDir, rel, 'journal.jsonl'), loneUserMessage('workflow journal'), 'utf-8');
+
+    const result = await syncConversations(sourceDir, destDir, { skipIndex: true });
+
+    expect(result.copied).toBe(1);
+    expect(existsSync(join(destDir, rel, 'journal-summary.txt'))).toBe(false);
+  });
+
   it('leaves a stale error sentinel next to a subagent transcript untouched', async () => {
     const rel = join('project-a', 'session-1', 'subagents');
     mkdirSync(join(sourceDir, rel), { recursive: true });
@@ -199,8 +210,9 @@ describe('sync command', () => {
     const sentinel = join(destDir, rel, 'agent-abc123-summary.txt');
     const staleContent = '__ERRORED__\n2020-01-01T00:00:00.000Z\nold failure\n';
     writeFileSync(sentinel, staleContent, 'utf-8');
-    const twoHoursAgo = new Date(Date.now() - 2 * 3600_000);
-    utimesSync(sentinel, twoHoursAgo, twoHoursAgo);
+    // 2020 mtime: stale under any EPISODIC_MEMORY_SUMMARY_ERROR_RETRY_HOURS.
+    const longAgo = new Date('2020-01-01T00:00:00Z');
+    utimesSync(sentinel, longAgo, longAgo);
 
     await syncConversations(sourceDir, destDir, { skipIndex: true });
 

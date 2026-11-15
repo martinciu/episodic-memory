@@ -170,6 +170,26 @@ describe('sync command — error-sentinel + retry behavior (#96)', () => {
     expect(sentinelsAfter2.length).toBe(fileCount);
   });
 
+  it('stops the batch after the first auth failure and error-sentinels the rest', async () => {
+    mkdirSync(join(sourceDir, 'project-a'), { recursive: true });
+    const ids = [0, 1, 2].map(i => `2222bbbb-2222-2222-2222-${String(i).padStart(12, '0')}`);
+    for (const id of ids) {
+      writeFileSync(join(sourceDir, 'project-a', `${id}.jsonl`), makeNonEmptyJsonl(id), 'utf-8');
+    }
+
+    vi.mocked(summarizeConversation).mockRejectedValue(new Error('Failed to authenticate. API Error: 401'));
+    const result = await syncConversations(sourceDir, destDir, { skipIndex: true });
+
+    expect(vi.mocked(summarizeConversation)).toHaveBeenCalledTimes(1);
+    for (const id of ids) {
+      const content = readFileSync(join(destDir, 'project-a', `${id}-summary.txt`), 'utf-8');
+      expect(isErroredSentinel(content)).toBe(true);
+    }
+    const skipped = result.errors.filter(e => e.error.includes('Summary generation skipped'));
+    expect(skipped).toHaveLength(2);
+    expect(result.errors).toHaveLength(3);
+  });
+
   it('leaves empty zero-exchange sentinels alone (does not retry them)', async () => {
     // Regression guard: shouldQueueForSummary must distinguish empty (permanent
     // skip; #91) from __ERRORED__ (transient; retry after threshold).
