@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0-martinciu.3] - 2026-11-17 (fork: martinciu/episodic-memory)
+
+### Fixed
+- **Summaries no longer leave fake sessions in `/resume`.** Every summary written without resuming a session left a one-line, title-only session file in `~/.claude/projects/`, and `/resume` listed each one as a session. On one machine 3,581 of them had piled up, pushing real sessions below the fold. The summarizer's own subprocess now runs with title generation turned off; your own sessions keep their titles. Existing stubs aren't removed automatically: [PR #32](https://github.com/martinciu/episodic-memory/pull/32) has a cleanup recipe (run the dry run first) (#31).
+- **An API error can no longer be saved as a conversation's summary.** A raw `API Error: …` result, or a long conversation where every part failed to summarize, used to be stored as the summary for good. Both now count as failures and are retried later (#20).
+- **An expired login stops the summary batch for long conversations too.** An authentication failure partway through a long conversation now stops the batch at once instead of trying every remaining part (#20).
+- **`verify --fix` tells you when a summary couldn't be refreshed.** It used to print "✅ Repair complete." even when re-summarizing failed. It now counts the failures and says which will be retried, and a failed summary no longer stops the conversation from being re-indexed (#20).
+
+### Changed
+- **Subagent and workflow transcripts are no longer summarized.** They are still archived, indexed and searchable; they just don't get an LLM summary, which only appears next to search results. They made up about two thirds of the summary backlog, so background syncs make far fewer summarizer calls (#31).
+
+### Removed
+- **`EPISODIC_MEMORY_API_MODEL_FALLBACK`.** The haiku→sonnet fallback it configured could never trigger on the current Claude SDK. If you set it, it's now ignored and you can remove it (#20).
+
 ## [1.6.0-martinciu.2] - 2026-10-03 (fork: martinciu/episodic-memory)
 
 ### Changed
