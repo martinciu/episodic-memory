@@ -3,7 +3,7 @@ import path from 'path';
 import { parseConversation } from './parser.js';
 import { initDatabase, getAllExchanges, getFileLastIndexed } from './db.js';
 import { getArchiveDir, getExcludedProjects, findJsonlFiles, statIfExists } from './paths.js';
-import { isErroredSentinel } from './summary-sentinel.js';
+import { formatErrorSentinel, hasRealSummary, isErroredSentinel, isSubagentTranscript } from './summary-sentinel.js';
 
 export interface VerificationResult {
   missing: Array<{ path: string; reason: string }>;
@@ -66,13 +66,18 @@ export async function verifyIndex(): Promise<VerificationResult> {
       // Check for missing or errored summary. An error sentinel (#96) means a
       // previous summarization failed — verify treats it as "missing" so repair
       // re-attempts it rather than reporting the conversation as healthy.
-      if (!fs.existsSync(summaryPath)) {
-        result.missing.push({ path: conversationPath, reason: 'No summary file' });
-        continue;
-      }
-      if (isErroredSentinel(fs.readFileSync(summaryPath, 'utf-8'))) {
-        result.missing.push({ path: conversationPath, reason: 'Previous summarization failed (error sentinel)' });
-        continue;
+      // Subagent and workflow transcripts are never summarized (#31), so they
+      // are never "missing" a summary; the outdated/corrupted checks below
+      // still run for them.
+      if (!isSubagentTranscript(file)) {
+        if (!fs.existsSync(summaryPath)) {
+          result.missing.push({ path: conversationPath, reason: 'No summary file' });
+          continue;
+        }
+        if (isErroredSentinel(fs.readFileSync(summaryPath, 'utf-8'))) {
+          result.missing.push({ path: conversationPath, reason: 'Previous summarization failed (error sentinel)' });
+          continue;
+        }
       }
 
       // Check if file is outdated (modified after last_indexed)
@@ -142,6 +147,9 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
     ...issues.outdated.map(o => o.path)
   ];
 
+  let summaryFailures = 0;
+  let keptPreviousSummary = 0;
+
   for (const conversationPath of toReindex) {
     console.log(`Re-indexing: ${conversationPath}`);
     try {
@@ -158,11 +166,29 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
         continue;
       }
 
-      // Generate/update summary
-      const summaryPath = conversationPath.replace('.jsonl', '-summary.txt');
-      const summary = await summarizeConversation(exchanges);
-      fs.writeFileSync(summaryPath, summary, 'utf-8');
-      console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
+      // Generate/update summary. Subagent and workflow transcripts are never
+      // summarized (#31), even if one reaches here via `outdated`.
+      const projectRelative = path.relative(path.join(archiveDir, project), conversationPath);
+      // A summary failure never stops indexing (#20). It writes an error
+      // sentinel so a later run retries (#96), but only when no real summary
+      // exists: a failed refresh of an `outdated` conversation keeps the older
+      // summary instead of replacing it with __ERRORED__.
+      if (!isSubagentTranscript(projectRelative)) {
+        const summaryPath = conversationPath.replace('.jsonl', '-summary.txt');
+        try {
+          const summary = await summarizeConversation(exchanges);
+          fs.writeFileSync(summaryPath, summary, 'utf-8');
+          console.log(`  Created summary: ${summary.split(/\s+/).length} words`);
+        } catch (error) {
+          summaryFailures++;
+          if (hasRealSummary(summaryPath)) {
+            keptPreviousSummary++;
+          } else {
+            try { fs.writeFileSync(summaryPath, formatErrorSentinel(error), 'utf-8'); } catch {}
+          }
+          console.error(`  Summary failed for ${conversationPath}:`, error);
+        }
+      }
 
       // Index exchanges
       for (const exchange of exchanges) {
@@ -189,5 +215,18 @@ export async function repairIndex(issues: VerificationResult): Promise<void> {
     issues.corrupted.forEach(c => console.log(`  ${c.path}: ${c.error}`));
   }
 
-  console.log('✅ Repair complete.');
+  if (summaryFailures > 0) {
+    // Indexing stamps last_indexed, so a failed refresh that kept the previous
+    // summary is no longer visible to verifyIndex as outdated and is not
+    // retried automatically; surface it here instead of claiming success. The
+    // rest got an error sentinel, which the next verify --fix or sync retries.
+    const noun = summaryFailures === 1 ? 'summary' : 'summaries';
+    const retried = summaryFailures - keptPreviousSummary;
+    console.log(
+      `⚠️  ${summaryFailures} ${noun} failed: ${retried} marked for retry by the next verify --fix or sync; ` +
+      `${keptPreviousSummary} kept the previous summary and won't be retried automatically.`
+    );
+  } else {
+    console.log('✅ Repair complete.');
+  }
 }

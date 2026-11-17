@@ -12,6 +12,10 @@ export declare function truncateSdkErrorDetail(detail: string, max?: number): st
  * hit an API error (carried in `result` / `api_error_status`): e.g. a CLI OAuth
  * 401 (#138), a replayed-thinking-block 400 (#110), or "No conversation found"
  * on an archive-only resume (#122).
+ *
+ * Also thrown with the synthetic subtype `'api_error_text'` (`apiErrorStatus`
+ * null, so `isResumeFailure` never matches it) when a non-error result's text
+ * starts with `API Error:` (#20).
  */
 export declare class SummarizerSdkError extends Error {
     readonly subtype: string;
@@ -68,7 +72,6 @@ export interface CodexSummarizerCommand {
  *
  * Env vars (all optional):
  * - EPISODIC_MEMORY_API_MODEL: Model to use (default: haiku)
- * - EPISODIC_MEMORY_API_MODEL_FALLBACK: Fallback model on error (default: sonnet)
  * - EPISODIC_MEMORY_API_BASE_URL: Custom API endpoint
  * - EPISODIC_MEMORY_API_TOKEN: Auth token for custom endpoint
  * - EPISODIC_MEMORY_API_TIMEOUT_MS: Timeout for API calls (default: SDK default)
@@ -123,7 +126,9 @@ export type SummarizerQueryFn = (args: {
 /**
  * Run one summarizer query() under a wall-clock timeout, returning the SDK's
  * `result` string. Throws SummarizerSdkError on an is_error result (carrying
- * api_error_status + truncated result text) and SummarizerTimeoutError if the
+ * api_error_status + truncated result text), also with the synthetic subtype
+ * 'api_error_text' (apiErrorStatus null, never matched by isResumeFailure) when
+ * a non-error result's text starts with 'API Error:', and SummarizerTimeoutError if the
  * generator does not produce a result within timeoutMs — aborting the query via
  * AbortController and closing the generator so the wedged subprocess is torn down
  * (#160). Buffers the subprocess stderr and appends it to process-exit errors so
@@ -138,7 +143,10 @@ export declare function formatConversationText(exchanges: ConversationExchange[]
  * persistSession: false keeps the SDK from writing its session transcript to
  * ~/.claude/projects/ (#83). Without it, every summarization spawns a fake
  * session JSONL that pollutes the IDE session sidebar. The option is honored
- * by claude-agent-sdk >= 0.2.0.
+ * by claude-agent-sdk >= 0.2.0. It keeps the transcript out, but not the
+ * session title: the CLI still writes an `ai-title`-only JSONL for every
+ * non-resume call. That is why getApiEnv() sets
+ * CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 in `env` (#31).
  *
  * tools: [] disables every built-in tool so a resumed mid-task session can't
  * keep EXECUTING the task instead of writing a <summary>.

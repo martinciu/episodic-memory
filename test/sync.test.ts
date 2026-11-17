@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, utimesSync, existsSync, readdirSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, statSync, utimesSync, existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { syncConversations } from '../src/sync.js';
@@ -148,26 +148,106 @@ describe('sync command', () => {
     expect(existsSync(join(destDir, 'project-a', 'real.jsonl'))).toBe(true);
   });
 
-  it('queues summaries for transcripts whose filename has no UUID (subagent transcripts)', async () => {
-    // Subagent transcripts are named agent-<hex>.jsonl — no UUID to extract.
-    // Before the fix, the missing-sessionId gate dropped them from the summary
-    // queue entirely. Use a zero-exchange transcript (a lone user message): if
-    // it reaches the summary pipeline it gets an empty sentinel written — which
-    // is observable without any network/CLI call. No sentinel ⇒ it was dropped.
+  // The summary-queue tests below use a zero-exchange transcript (a lone user
+  // message): if it reaches the summary pipeline it gets an empty sentinel
+  // written, which is observable without any network/CLI call. No sentinel ⇒
+  // it was never queued.
+  const loneUserMessage = (text: string) =>
+    JSON.stringify({ type: 'user', message: { role: 'user', content: text } });
+
+  it('does not queue subagent transcripts for summaries (#31)', async () => {
     mkdirSync(join(sourceDir, 'project-a', 'session-1', 'subagents'), { recursive: true });
     const subagentFile = join(sourceDir, 'project-a', 'session-1', 'subagents', 'agent-a81c86e504e1e7c14.jsonl');
-    writeFileSync(
-      subagentFile,
-      JSON.stringify({ type: 'user', message: { role: 'user', content: 'unanswered subagent prompt' } }),
-      'utf-8'
-    );
+    writeFileSync(subagentFile, loneUserMessage('unanswered subagent prompt'), 'utf-8');
 
     const result = await syncConversations(sourceDir, destDir, { skipIndex: true });
 
     expect(result.copied).toBe(1);
     const sentinel = join(destDir, 'project-a', 'session-1', 'subagents', 'agent-a81c86e504e1e7c14-summary.txt');
+    expect(existsSync(sentinel)).toBe(false);
+  });
+
+  it('still queues transcripts whose filename has no UUID', async () => {
+    // No UUID to extract ⇒ no sessionId, but the file is still queued:
+    // summarizeConversation falls back to summarizing from the transcript text.
+    mkdirSync(join(sourceDir, 'project-a'), { recursive: true });
+    writeFileSync(join(sourceDir, 'project-a', 'notes-export.jsonl'), loneUserMessage('unanswered prompt'), 'utf-8');
+
+    await syncConversations(sourceDir, destDir, { skipIndex: true });
+
+    const sentinel = join(destDir, 'project-a', 'notes-export-summary.txt');
     expect(existsSync(sentinel)).toBe(true);
     expect(statSync(sentinel).size).toBe(0);
+  });
+
+  it('does not queue legacy top-level agent-<hex>.jsonl transcripts', async () => {
+    mkdirSync(join(sourceDir, 'project-a'), { recursive: true });
+    writeFileSync(join(sourceDir, 'project-a', 'agent-afa95f98d145b3d2e.jsonl'), loneUserMessage('legacy subagent'), 'utf-8');
+
+    const result = await syncConversations(sourceDir, destDir, { skipIndex: true });
+
+    expect(result.copied).toBe(1);
+    expect(existsSync(join(destDir, 'project-a', 'agent-afa95f98d145b3d2e-summary.txt'))).toBe(false);
+  });
+
+  it('does not queue workflow transcripts under subagents/workflows (segment rule alone)', async () => {
+    const rel = join('project-a', 'a8868824-cd73-4ec9-92e5-a3fb4e827c61', 'subagents', 'workflows', 'wf_3b2e44d7-e36');
+    mkdirSync(join(sourceDir, rel), { recursive: true });
+    writeFileSync(join(sourceDir, rel, 'journal.jsonl'), loneUserMessage('workflow journal'), 'utf-8');
+
+    const result = await syncConversations(sourceDir, destDir, { skipIndex: true });
+
+    expect(result.copied).toBe(1);
+    expect(existsSync(join(destDir, rel, 'journal-summary.txt'))).toBe(false);
+  });
+
+  it('leaves a stale error sentinel next to a subagent transcript untouched', async () => {
+    const rel = join('project-a', 'session-1', 'subagents');
+    mkdirSync(join(sourceDir, rel), { recursive: true });
+    mkdirSync(join(destDir, rel), { recursive: true });
+    writeFileSync(join(sourceDir, rel, 'agent-abc123.jsonl'), loneUserMessage('subagent prompt'), 'utf-8');
+
+    const sentinel = join(destDir, rel, 'agent-abc123-summary.txt');
+    const staleContent = '__ERRORED__\n2020-01-01T00:00:00.000Z\nold failure\n';
+    writeFileSync(sentinel, staleContent, 'utf-8');
+    // 2020 mtime: stale under any EPISODIC_MEMORY_SUMMARY_ERROR_RETRY_HOURS.
+    const longAgo = new Date('2020-01-01T00:00:00Z');
+    utimesSync(sentinel, longAgo, longAgo);
+
+    await syncConversations(sourceDir, destDir, { skipIndex: true });
+
+    expect(readFileSync(sentinel, 'utf-8')).toBe(staleContent);
+  });
+
+  it('queues main transcripts even when the archive root contains a subagents folder', async () => {
+    mkdirSync(join(sourceDir, 'project-a'), { recursive: true });
+    writeFileSync(join(sourceDir, 'project-a', 'main.jsonl'), loneUserMessage('main prompt'), 'utf-8');
+    const subagentsNamedDest = join(testDir, 'subagents', 'dest');
+
+    await syncConversations(sourceDir, subagentsNamedDest, { skipIndex: true });
+
+    expect(existsSync(join(subagentsNamedDest, 'project-a', 'main-summary.txt'))).toBe(true);
+  });
+
+  it('excludes subagent transcripts from the summary backlog count', async () => {
+    mkdirSync(join(sourceDir, 'project-a', 's1', 'subagents'), { recursive: true });
+    for (let i = 1; i <= 12; i++) {
+      const name = `main-${String(i).padStart(2, '0')}.jsonl`;
+      writeFileSync(join(sourceDir, 'project-a', name), loneUserMessage(`main ${i}`), 'utf-8');
+    }
+    for (const hex of ['aaa111', 'bbb222', 'ccc333']) {
+      writeFileSync(join(sourceDir, 'project-a', 's1', 'subagents', `agent-${hex}.jsonl`), loneUserMessage('sub'), 'utf-8');
+    }
+
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await syncConversations(sourceDir, destDir, { skipIndex: true, summaryLimit: 10 });
+      const lines = logSpy.mock.calls.map(call => call.map(String).join(' '));
+      expect(lines.some(line => line.includes('(2 more need summaries'))).toBe(true);
+      expect(lines.some(line => line.includes('(5 more'))).toBe(false);
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 
   it('should skip indexing conversations with DO NOT INDEX marker', async () => {

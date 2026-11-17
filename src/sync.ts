@@ -3,7 +3,7 @@ import path from 'path';
 import { StringDecoder } from 'string_decoder';
 import { SUMMARIZER_CONTEXT_MARKER } from './constants.js';
 import { getExcludedProjects, findJsonlFiles, statIfExists } from './paths.js';
-import { formatErrorSentinel, shouldQueueForSummary } from './summary-sentinel.js';
+import { formatErrorSentinel, isSubagentTranscript, shouldQueueForSummary } from './summary-sentinel.js';
 import { capExchangeForIndex, getMaxMessageBytes, isOversizeExchange } from './message-size.js';
 
 const EXCLUSION_MARKERS = [
@@ -50,11 +50,12 @@ export function shouldSkipConversation(filePath: string): boolean {
 
 /**
  * True when a transcript contains at least one message line in any supported
- * harness format. Summarizer-spawned Agent SDK sessions materialize as
- * message-less stub files (a single {"type":"ai-title"} line) that defeat the
- * marker-based exclusion above and would otherwise re-enter the sync queue on
- * every run — one new stub per summary generated. A transcript that has no
- * messages *yet* (a session that just started) is skipped this run and picked
+ * harness format. Summarizer subprocesses used to materialize message-less
+ * stub files (a single {"type":"ai-title"} line), one per call, until
+ * getApiEnv() set CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC (fork #31). Such
+ * stubs defeat the marker-based exclusion above and would re-enter the sync
+ * queue on every run; stubs written by older versions can still be on disk.
+ * A transcript that has no messages *yet* (a session that just started) is skipped this run and picked
  * up on a later sync once it has content, since its mtime keeps advancing.
  */
 function hasConversationContent(filePath: string): boolean {
@@ -237,12 +238,15 @@ export async function syncConversations(
         // Check if this file needs a summary (whether newly copied or existing).
         // shouldQueueForSummary skips files that already have a real summary or
         // an empty zero-exchange sentinel, and retries stale error sentinels (#96).
-        if (!options.skipSummaries) {
+        // Subagent and workflow transcripts are never summarized (#31). That
+        // check runs first, on the project-relative path, so they never touch
+        // the sentinel, never stream-read the file, and never take a
+        // summaryLimit slot or count toward "N more need summaries".
+        if (!options.skipSummaries && !isSubagentTranscript(file)) {
           const summaryPath = destFile.replace('.jsonl', '-summary.txt');
           if (shouldQueueForSummary(summaryPath) && !shouldSkipConversation(destFile)) {
-            // sessionId enables Claude session-resume summarization; when the
-            // filename has no UUID to extract (e.g. subagent transcripts named
-            // agent-<hex>.jsonl), queue anyway — summarizeConversation falls
+            // sessionId enables Claude session-resume summarization; a filename
+            // with no UUID to extract still queues: summarizeConversation falls
             // back to summarizing from the transcript text.
             const sessionId = extractSessionIdFromPath(destFile) ?? undefined;
             filesToSummarize.push({ path: destFile, sessionId });

@@ -25,6 +25,10 @@ export function truncateSdkErrorDetail(detail, max = SDK_ERROR_DETAIL_MAX) {
  * hit an API error (carried in `result` / `api_error_status`): e.g. a CLI OAuth
  * 401 (#138), a replayed-thinking-block 400 (#110), or "No conversation found"
  * on an archive-only resume (#122).
+ *
+ * Also thrown with the synthetic subtype `'api_error_text'` (`apiErrorStatus`
+ * null, so `isResumeFailure` never matches it) when a non-error result's text
+ * starts with `API Error:` (#20).
  */
 export class SummarizerSdkError extends Error {
     subtype;
@@ -115,7 +119,6 @@ export function isAuthFailure(error) {
  *
  * Env vars (all optional):
  * - EPISODIC_MEMORY_API_MODEL: Model to use (default: haiku)
- * - EPISODIC_MEMORY_API_MODEL_FALLBACK: Fallback model on error (default: sonnet)
  * - EPISODIC_MEMORY_API_BASE_URL: Custom API endpoint
  * - EPISODIC_MEMORY_API_TOKEN: Auth token for custom endpoint
  * - EPISODIC_MEMORY_API_TIMEOUT_MS: Timeout for API calls (default: SDK default)
@@ -135,9 +138,27 @@ export function getApiEnv() {
     // to the SDK subprocess unchanged, which is how summarization gets routed
     // through AWS Bedrock (#44). No per-var handling needed here — the spread
     // already covers it.
+    //
+    // CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 stops the summarizer subprocess
+    // from writing a session-title stub (#31, upstream obra/episodic-memory#183).
+    // As of claude-agent-sdk 0.2.141, the CLI skips title generation when this is
+    // set, or when it resumes a session that already has messages. Otherwise every
+    // non-resume call writes a one-line `ai-title` JSONL under ~/.claude/projects/
+    // that `/resume` lists as a session. `persistSession: false` does not cover
+    // that write. The variable also turns off the CLI's other nonessential
+    // traffic (telemetry, error reporting, update checks), which a one-shot
+    // summarizer doesn't need. `npm run test:summarizer-title-e2e` re-checks this
+    // against the live CLI. Setting it here covers every Claude spawn the
+    // summarizer makes: the direct call, the non-resume retry after a failed
+    // resume, and the hierarchical chunk and synthesis calls. It is
+    // scoped to this subprocess on purpose. Never set it globally, because the
+    // user's own sessions must keep their titles. Codex spawns also read this
+    // env and ignore the var. It sits after the `...process.env` spread so it
+    // wins over any inherited value.
     return {
         ...process.env,
         EPISODIC_MEMORY_SUMMARIZER_GUARD: '1',
+        CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
         ...(baseUrl && { ANTHROPIC_BASE_URL: baseUrl }),
         ...(token && { ANTHROPIC_AUTH_TOKEN: token }),
         ...(timeoutMs && { API_TIMEOUT_MS: timeoutMs }),
@@ -217,7 +238,9 @@ export function warnMeteredApiOnce() {
 /**
  * Run one summarizer query() under a wall-clock timeout, returning the SDK's
  * `result` string. Throws SummarizerSdkError on an is_error result (carrying
- * api_error_status + truncated result text) and SummarizerTimeoutError if the
+ * api_error_status + truncated result text), also with the synthetic subtype
+ * 'api_error_text' (apiErrorStatus null, never matched by isResumeFailure) when
+ * a non-error result's text starts with 'API Error:', and SummarizerTimeoutError if the
  * generator does not produce a result within timeoutMs — aborting the query via
  * AbortController and closing the generator so the wedged subprocess is torn down
  * (#160). Buffers the subprocess stderr and appends it to process-exit errors so
@@ -260,6 +283,18 @@ export async function runSummarizerQuery(queryFn, prompt, options, timeoutMs) {
                 if (message.is_error) {
                     throw new SummarizerSdkError(message.subtype || 'unknown', message.session_id, message.api_error_status, typeof result === 'string' ? result : undefined);
                 }
+                // Defensive (#20): older CLI builds returned some API errors as plain
+                // result text with is_error unset. On claude-agent-sdk 0.2.141 the CLI
+                // sets is_error, so the branch above normally fires first. If one does
+                // slip through it must never become a summary: throw, so the direct path
+                // writes the __ERRORED__ sentinel and retries later (a chunk error is
+                // skipped; a synthesis error falls back to the chunk summaries). Anchored
+                // prefix match with the colon (the CLI's error format) so a real summary
+                // that merely mentions "API Error 400", or starts with "API Error
+                // handling…", passes through.
+                if (typeof result === 'string' && /^API Error:/.test(result.trim())) {
+                    throw new SummarizerSdkError('api_error_text', message.session_id, null, result);
+                }
                 return typeof result === 'string' ? result : '';
             }
         }
@@ -300,7 +335,10 @@ function extractSummary(text) {
  * persistSession: false keeps the SDK from writing its session transcript to
  * ~/.claude/projects/ (#83). Without it, every summarization spawns a fake
  * session JSONL that pollutes the IDE session sidebar. The option is honored
- * by claude-agent-sdk >= 0.2.0.
+ * by claude-agent-sdk >= 0.2.0. It keeps the transcript out, but not the
+ * session title: the CLI still writes an `ai-title`-only JSONL for every
+ * non-resume call. That is why getApiEnv() sets
+ * CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 in `env` (#31).
  *
  * tools: [] disables every built-in tool so a resumed mid-task session can't
  * keep EXECUTING the task instead of writing a <summary>.
@@ -370,22 +408,10 @@ export function buildCodexSummarizerCommand(args) {
         model: args.model,
     };
 }
-async function callClaude(prompt, sessionId, useFallback = false, cwd) {
-    const primaryModel = process.env.EPISODIC_MEMORY_API_MODEL || 'haiku';
-    const fallbackModel = process.env.EPISODIC_MEMORY_API_MODEL_FALLBACK || 'sonnet';
-    const model = useFallback ? fallbackModel : primaryModel;
+async function callClaude(prompt, sessionId, cwd) {
+    const model = process.env.EPISODIC_MEMORY_API_MODEL || 'haiku';
     const options = buildSummarizerQueryOptions({ model, sessionId, cwd });
-    const result = await runSummarizerQuery(query, prompt, options, summaryTimeoutMs());
-    // Check if result is an API error the SDK returns as a result string (not is_error).
-    if (typeof result === 'string' && result.includes('API Error') && result.includes('thinking.budget_tokens')) {
-        if (!useFallback) {
-            console.log(`    ${primaryModel} hit thinking budget error, retrying with ${fallbackModel}`);
-            return await callClaude(prompt, sessionId, true, cwd);
-        }
-        // If fallback also fails, return error message
-        return result;
-    }
-    return result;
+    return runSummarizerQuery(query, prompt, options, summaryTimeoutMs());
 }
 function appServerTimeoutMs() {
     const configured = Number(process.env.EPISODIC_MEMORY_CODEX_SUMMARY_TIMEOUT_MS);
@@ -681,7 +707,7 @@ Bad:
 
 ${conversationText}`;
         try {
-            const result = await callClaude(prompt, claudeSessionId, false, cwd);
+            const result = await callClaude(prompt, claudeSessionId, cwd);
             return extractSummary(result);
         }
         catch (error) {
@@ -713,6 +739,7 @@ ${conversationText}`;
     console.log(`  Split into ${chunks.length} chunks`);
     // Summarize each chunk
     const chunkSummaries = [];
+    let lastChunkError;
     for (let i = 0; i < chunks.length; i++) {
         const chunkText = formatConversationText(chunks[i]);
         const prompt = `${SUMMARIZER_CONTEXT_MARKER}.
@@ -729,11 +756,20 @@ Example: <summary>Implemented HID keyboard functionality for ESP32. Hit Bluetoot
             console.log(`  Chunk ${i + 1}/${chunks.length}: ${extracted.split(/\s+/).length} words`);
         }
         catch (error) {
-            console.log(`  Chunk ${i + 1} failed, skipping`);
+            // Auth is global, not per-chunk: stop here so sync's isAuthFailure
+            // batch stop fires for long conversations too (#138, #20).
+            if (isAuthFailure(error))
+                throw error;
+            lastChunkError = error;
+            console.log(`  Chunk ${i + 1} failed, skipping: ${error instanceof Error ? error.message : String(error)}`);
         }
     }
+    // Every chunk failed: throw, never return an error string as the summary
+    // (#20). Callers write the __ERRORED__ sentinel and retry after the
+    // threshold (#96).
     if (chunkSummaries.length === 0) {
-        return 'Error: Unable to summarize conversation.';
+        const lastMessage = lastChunkError instanceof Error ? lastChunkError.message : String(lastChunkError);
+        throw new Error(`Unable to summarize conversation: all chunks failed (last error: ${lastMessage})`, { cause: lastChunkError });
     }
     // Synthesize chunks into final summary
     const synthesisPrompt = `${SUMMARIZER_CONTEXT_MARKER}.
@@ -756,7 +792,10 @@ Your summary (max 200 words):`;
         return extractSummary(result);
     }
     catch (error) {
-        console.log(`  Synthesis failed, using chunk summaries`);
+        // Auth is global: surface it so sync's batch stop fires (#138, #20).
+        if (isAuthFailure(error))
+            throw error;
+        console.log(`  Synthesis failed, using chunk summaries: ${error instanceof Error ? error.message : String(error)}`);
         return chunkSummaries.join(' ');
     }
 }
